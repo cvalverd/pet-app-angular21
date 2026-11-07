@@ -1,0 +1,8 @@
+<h2>Detalles de la Mascota</h2>
+@if (pet(); as pet) {
+  <div>
+    <h3>{{ pet.name }}</h3>
+    <p>Raza: {{ pet.breed }}</p>
+    <p>Edad: {{ pet.age }}</p>
+  </div>
+}

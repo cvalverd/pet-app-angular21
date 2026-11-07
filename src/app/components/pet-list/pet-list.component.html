@@ -1,0 +1,10 @@
+<h2>Lista de Mascotas</h2>
+<ul>
+  @for (pet of pets(); track pet.id) {
+    <li (click)="onPetSelected(pet)">
+      {{ pet.name }} ({{ pet.breed }})
+    </li>
+  } @empty {
+    <p>No hay datos disponibles.</p>
+  }
+</ul>
