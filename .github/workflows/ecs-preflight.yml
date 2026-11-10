@@ -15,6 +15,8 @@ jobs:
       AWS_REGION: us-east-1
       AWS_ACCOUNT_ID: "622519216316"
       ECR_REPOSITORY: pet-app-angular21
+      ORACLE_CREDENTIALS_SECRET: pet-api/oracle-db-credentials
+      ORACLE_WALLET_SECRET: pet-api/oracle-wallet
 
     steps:
       - name: Configure AWS credentials
@@ -63,6 +65,14 @@ jobs:
           check_read "Published ECR image" aws ecr describe-images \
             --repository-name "$ECR_REPOSITORY" --region "$AWS_REGION" \
             --query 'imageDetails[].{tags:imageTags,digest:imageDigest,pushed:imagePushedAt}' \
+            --output json
+          check_read "Oracle database credentials secret metadata" aws secretsmanager describe-secret \
+            --secret-id "$ORACLE_CREDENTIALS_SECRET" --region "$AWS_REGION" \
+            --query '{Name:Name,ARN:ARN,KmsKeyId:KmsKeyId,LastChangedDate:LastChangedDate}' \
+            --output json
+          check_read "Oracle wallet secret metadata" aws secretsmanager describe-secret \
+            --secret-id "$ORACLE_WALLET_SECRET" --region "$AWS_REGION" \
+            --query '{Name:Name,ARN:ARN,KmsKeyId:KmsKeyId,LastChangedDate:LastChangedDate}' \
             --output json
 
           check_read "LabRole trust policy" aws iam get-role \
