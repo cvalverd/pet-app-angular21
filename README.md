@@ -71,6 +71,9 @@ deniegue ECR harán fallar el workflow. Este workflow solo publica la imagen en 
 actualiza recursos ECS. La aplicación actualmente fija la API en `http://localhost:8080/pets`, por
 lo que las llamadas a la API no funcionarán para visitantes hasta configurar la URL del backend.
 
+El workflow manual **Check ECS deployment prerequisites** hace una comprobación de solo lectura de
+la imagen, el clúster ECS, los roles de tarea y la red; no crea recursos.
+
 ## Docker
 
 ```bash

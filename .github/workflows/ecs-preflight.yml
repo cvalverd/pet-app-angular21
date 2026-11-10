@@ -1,0 +1,89 @@
+name: Check ECS deployment prerequisites
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Inspect AWS deployment prerequisites
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AWS_REGION: us-east-1
+      AWS_ACCOUNT_ID: "622519216316"
+      ECR_REPOSITORY: pet-app-angular21
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Inspect ECS, image, IAM roles, and networking
+        shell: bash
+        run: |
+          failed=0
+
+          check_read() {
+            label="$1"
+            shift
+            if output="$("$@" 2>&1)"; then
+              echo "=== $label ==="
+              echo "$output"
+            else
+              status=$?
+              echo "::error::$label failed (exit $status)"
+              echo "$output"
+              failed=1
+            fi
+          }
+
+          if account_id="$(aws sts get-caller-identity --query Account --output text 2>&1)"; then
+            :
+          else
+            status=$?
+            echo "::error::Could not identify AWS account (exit $status)"
+            echo "$account_id"
+            exit "$status"
+          fi
+          if [[ "$account_id" != "$AWS_ACCOUNT_ID" ]]; then
+            echo "::error::Credentials point to account $account_id, not $AWS_ACCOUNT_ID."
+            exit 1
+          fi
+          echo "AWS account: $account_id"
+
+          check_read "ECS clusters" aws ecs list-clusters \
+            --region "$AWS_REGION" --query clusterArns --output json
+          check_read "Published ECR image" aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" --region "$AWS_REGION" \
+            --query 'imageDetails[].{tags:imageTags,digest:imageDigest,pushed:imagePushedAt}' \
+            --output json
+
+          for role in ecsTaskExecutionRole pet-app-task-role; do
+            check_read "IAM role $role" aws iam get-role \
+              --role-name "$role" --query 'Role.{Arn:Arn,Trust:AssumeRolePolicyDocument}' \
+              --output json
+          done
+
+          check_read "Default VPC" aws ec2 describe-vpcs \
+            --region "$AWS_REGION" --filters Name=isDefault,Values=true \
+            --query 'Vpcs[].{VpcId:VpcId,CidrBlock:CidrBlock,State:State}' --output json
+          check_read "Default subnets" aws ec2 describe-subnets \
+            --region "$AWS_REGION" --filters Name=default-for-az,Values=true \
+            --query 'Subnets[].{SubnetId:SubnetId,VpcId:VpcId,AvailabilityZone:AvailabilityZone,MapPublicIpOnLaunch:MapPublicIpOnLaunch}' \
+            --output json
+          check_read "Issued ACM certificates" aws acm list-certificates \
+            --region "$AWS_REGION" --certificate-statuses ISSUED \
+            --query 'CertificateSummaryList[].{DomainName:DomainName,CertificateArn:CertificateArn}' \
+            --output json
+
+          if [[ "$failed" -ne 0 ]]; then
+            echo "::error::Preflight found missing resources or insufficient read permissions. No AWS resources were created."
+            exit 1
+          fi
