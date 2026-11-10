@@ -53,12 +53,18 @@ jobs:
             | sha256sum --check
           mkdir -p "$RUNNER_TEMP/cfn-guard"
           tar -xzf "$archive" -C "$RUNNER_TEMP/cfn-guard"
-          chmod +x "$RUNNER_TEMP/cfn-guard/cfn-guard"
-          "$RUNNER_TEMP/cfn-guard/cfn-guard" --version
+          guard_binary="$(find "$RUNNER_TEMP/cfn-guard" -maxdepth 1 -type f -name 'cfn-guard*' -print -quit)"
+          if [[ -z "$guard_binary" ]]; then
+            echo "::error::The cfn-guard release archive did not contain its executable."
+            exit 1
+          fi
+          chmod +x "$guard_binary"
+          echo "CFN_GUARD_BIN=$guard_binary" >> "$GITHUB_ENV"
+          "$guard_binary" --version
 
       - name: Check CloudFormation security rules
         run: >-
-          $RUNNER_TEMP/cfn-guard/cfn-guard validate
+          "$CFN_GUARD_BIN" validate
           --rules ecs/cfn-guard/cloudfront_viewer_policy_https.guard
           --data "$TEMPLATE_FILE"
           --output-format json
