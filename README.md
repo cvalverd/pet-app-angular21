@@ -45,6 +45,31 @@ El backend es el microservicio **pet-api** (`C:\dev\pet-api-oracle`, Spring Boot
 despliega en otro lugar (por ejemplo una EC2), cambia esa URL y agrega el origen del frontend en
 `CORS_ORIGINS` del microservicio.
 
+### Publicar la imagen en Amazon ECR con AWS Academy
+
+El workflow `.github/workflows/publish-ecr.yml` construye la imagen Docker y la publica en ECR con
+el SHA del commit como tag en un runner alojado por GitHub. No requiere Docker, AWS CLI ni un runner
+en tu PC; usa credenciales temporales de AWS Academy almacenadas como GitHub Actions Secrets.
+
+Requisitos:
+
+1. Inicia el laboratorio AWS Academy y agrega estos secretos del repositorio en **Settings →
+   Secrets and variables → Actions → New repository secret**:
+   - `AWS_ACCESS_KEY_ID`
+   - `AWS_SECRET_ACCESS_KEY`
+   - `AWS_SESSION_TOKEN`
+2. Usa los valores temporales de la sesión Academy activa. Cuando roten o venzan, actualiza los tres
+   secretos antes de volver a ejecutar el workflow.
+3. Crea antes el repositorio ECR `pet-app-angular21` en `us-east-1`. Las credenciales deben permitir
+   describir ese repositorio, autenticarse en ECR y subir imágenes.
+4. Ejecuta **Publish container to Amazon ECR** desde la pestaña **Actions**, o actualiza la rama
+   `main` mientras los secretos contienen credenciales vigentes.
+
+No pegues credenciales AWS en el código ni en el chat. Las credenciales vencidas o una política que
+deniegue ECR harán fallar el workflow. Este workflow solo publica la imagen en ECR, no crea ni
+actualiza recursos ECS. La aplicación actualmente fija la API en `http://localhost:8080/pets`, por
+lo que las llamadas a la API no funcionarán para visitantes hasta configurar la URL del backend.
+
 ## Docker
 
 ```bash
