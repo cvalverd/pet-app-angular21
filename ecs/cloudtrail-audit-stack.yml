@@ -46,8 +46,7 @@ Resources:
         Rules:
           - Id: ExpireCloudTrailLogsAfter90Days
             Status: Enabled
-            Filter:
-              Prefix: AWSLogs/
+            Prefix: AWSLogs/
             ExpirationInDays: 89
             NoncurrentVersionExpiration:
               NoncurrentDays: 1
