@@ -60,8 +60,9 @@ Requisitos:
    - `AWS_SESSION_TOKEN`
 2. Usa los valores temporales de la sesión Academy activa. Cuando roten o venzan, actualiza los tres
    secretos antes de volver a ejecutar el workflow.
-3. Crea antes el repositorio ECR `pet-app-angular21` en `us-east-1`. Las credenciales deben permitir
-   describir ese repositorio, autenticarse en ECR y subir imágenes.
+3. Las credenciales deben permitir crear el repositorio ECR `pet-app-angular21` si aún no existe,
+   describirlo, autenticarse en ECR y subir imágenes. El workflow lo crea con tags inmutables y
+   cifrado AES256 cuando es necesario.
 4. Ejecuta **Publish container to Amazon ECR** desde la pestaña **Actions**, o actualiza la rama
    `main` mientras los secretos contienen credenciales vigentes.
 

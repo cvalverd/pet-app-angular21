@@ -45,9 +45,22 @@ jobs:
             exit 1
           fi
 
-          aws ecr describe-repositories \
+          if ! repositories="$(aws ecr describe-repositories \
             --repository-names "$ECR_REPOSITORY" \
-            --region "$AWS_REGION"
+            --region "$AWS_REGION" 2>&1)"; then
+            if [[ "$repositories" != *"RepositoryNotFoundException"* ]]; then
+              echo "$repositories"
+              exit 1
+            fi
+
+            aws ecr create-repository \
+              --repository-name "$ECR_REPOSITORY" \
+              --image-tag-mutability IMMUTABLE \
+              --encryption-configuration encryptionType=AES256 \
+              --region "$AWS_REGION"
+          else
+            echo "$repositories"
+          fi
 
       - name: Log in to Amazon ECR
         id: login-ecr
