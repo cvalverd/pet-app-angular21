@@ -1,0 +1,330 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Pet API on Fargate behind CloudFront HTTPS; restricts origin ingress to CloudFront
+  and injects Oracle connection material from Secrets Manager.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@v3
+  com.aws.cloudformation.Context:
+    arch: CloudFront HTTPS -> header-guarded ALB HTTP -> ECS Fargate -> Oracle Autonomous Database
+    must:
+      - Keep the ALB origin reachable only from CloudFront origin-facing prefix list.
+      - Keep ECS task ingress limited to the ALB security group.
+      - Inject DB credentials and wallet only from Secrets Manager; never place values in this template.
+      - Keep the Oracle wallet out of the container image and source repository.
+    ref:
+      - at: ../README.md
+        has: deployment workflow, secret names and operational constraints
+        scope: deployment
+Parameters:
+  ClusterName:
+    Type: String
+    AllowedPattern: '^[A-Za-z0-9_-]{1,255}$'
+    Description: Existing ECS cluster name.
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: At least two public subnets in distinct Availability Zones.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC that contains the public subnets.
+  CloudFrontPrefixListId:
+    Type: String
+    AllowedPattern: '^pl-[0-9a-f]+$'
+    Description: AWS-managed CloudFront origin-facing IPv4 prefix list.
+  BackendImage:
+    Type: String
+    AllowedPattern: '^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/pet-api-oracle:[0-9a-f]{40}$'
+    Description: Immutable backend ECR image URI tagged with its commit SHA.
+  ExecutionRoleArn:
+    Type: String
+    AllowedPattern: '^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$'
+    Description: Existing ECS task execution role with ECR, Logs, and secret read permissions.
+  OracleCredentialsSecretArn:
+    Type: String
+    AllowedPattern: '^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$'
+    Description: Secret JSON containing DB_URL, DB_USERNAME, and DB_PASSWORD.
+  OracleWalletSecretArn:
+    Type: String
+    AllowedPattern: '^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$'
+    Description: Secret containing the Base64-encoded Oracle wallet ZIP.
+  DeploymentNonce:
+    Type: String
+    AllowedPattern: '^[A-Za-z0-9-]{1,64}$'
+    Description: Unique deployment identifier used to refresh tasks and their injected secrets.
+  OriginVerifyHeaderValue:
+    Type: String
+    NoEcho: true
+    AllowedPattern: '^[A-Fa-f0-9]{64}$'
+    Description: Private shared secret for restricting the ALB listener to this CloudFront distribution.
+Resources:
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: retain concise API runtime logs for deployment diagnosis
+        must:
+          - Keep retention bounded for the temporary Academy environment.
+    Properties:
+      LogGroupName: !Sub '/ecs/${AWS::StackName}'
+      RetentionInDays: 7
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: admit origin traffic only from CloudFront edge servers; the header listener rule further binds requests to this distribution
+        must:
+          - Do not add general Internet CIDR ingress.
+          - Do not attach this group to ECS tasks or unrelated resources.
+    Properties:
+      GroupDescription: CloudFront-only origin traffic for the pet API.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - Description: CloudFront origin-facing servers only.
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourcePrefixListId: !Ref CloudFrontPrefixListId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  ApiTaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: isolate the API task; only the ALB may connect to its application port
+        must:
+          - Keep inbound port 8080 scoped to LoadBalancerSecurityGroup.
+    Properties:
+      GroupDescription: Pet API tasks; accept traffic only from the load balancer.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - Description: Application traffic from the API load balancer.
+          IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !GetAtt LoadBalancerSecurityGroup.GroupId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  ApiLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: stable HTTP origin for CloudFront; no direct viewer ingress
+        must:
+          - Keep internet-facing access restricted by LoadBalancerSecurityGroup.
+          - Keep origin transport HTTP only behind CloudFront HTTPS.
+    Properties:
+      Scheme: internet-facing
+      Type: application
+      IpAddressType: ipv4
+      Subnets: !Ref PublicSubnetIds
+      SecurityGroups:
+        - !GetAtt LoadBalancerSecurityGroup.GroupId
+
+  ApiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: route HTTP requests to Fargate task ENIs and verify the API can serve pet data
+        must:
+          - Target type must remain ip for awsvpc Fargate tasks.
+          - Health path /pets requires the Oracle database to be reachable.
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: HTTP
+      Port: 8080
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /pets
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+
+  ApiListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: leave the ALB origin HTTP-only; CloudFront enforces viewer HTTPS and supplies the private origin header
+        must:
+          - Keep origin ingress restricted to CloudFront edge servers by the load balancer security group.
+          - Keep the default action fixed at 403 and forward only through the origin header listener rule.
+    Properties:
+      LoadBalancerArn: !Ref ApiLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: '403'
+            ContentType: text/plain
+            MessageBody: Forbidden
+
+  ApiOriginHeaderRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    DependsOn:
+      - ApiListener
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: forward only requests carrying the private header configured on this CloudFront origin
+        must:
+          - Keep the header value secret and synchronized with the CloudFront origin configuration.
+          - Keep the listener default action denying requests without the origin verification header.
+    Properties:
+      ListenerArn: !Ref ApiListener
+      Priority: 1
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: X-Origin-Verify
+            Values:
+              - !Ref OriginVerifyHeaderValue
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ApiTargetGroup
+
+  ApiTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: run the existing Java 21 API image on Fargate with least runtime access and Secrets Manager injection
+        must:
+          - Do not set taskRoleArn; the API does not call AWS APIs.
+          - Keep the wallet and database credentials in Secrets Manager references only.
+          - Keep execution-role access limited to required ECR, Logs, and secret retrieval.
+    Properties:
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '512'
+      Memory: '1024'
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !Ref ExecutionRoleArn
+      ContainerDefinitions:
+        - Name: pet-api
+          Image: !Ref BackendImage
+          Essential: true
+          Environment:
+            - Name: TNS_ADMIN
+              Value: /app/wallet
+            - Name: DEPLOYMENT_ID
+              Value: !Ref DeploymentNonce
+          Secrets:
+            - Name: DB_URL
+              ValueFrom: !Sub '${OracleCredentialsSecretArn}:DB_URL::'
+            - Name: DB_USERNAME
+              ValueFrom: !Sub '${OracleCredentialsSecretArn}:DB_USERNAME::'
+            - Name: DB_PASSWORD
+              ValueFrom: !Sub '${OracleCredentialsSecretArn}:DB_PASSWORD::'
+            - Name: ORACLE_WALLET_BASE64
+              ValueFrom: !Ref OracleWalletSecretArn
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ApiLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  ApiService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - ApiOriginHeaderRule
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: keep one API task available behind the load balancer for temporary public demo access
+        must:
+          - Use public subnets for outbound Oracle and ECR connectivity; task ingress remains ALB-only.
+          - Use a deployment circuit breaker with rollback.
+    Properties:
+      Cluster: !Ref ClusterName
+      DesiredCount: 1
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      DeploymentConfiguration:
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      HealthCheckGracePeriodSeconds: 180
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !GetAtt ApiTaskSecurityGroup.GroupId
+          Subnets: !Ref PublicSubnetIds
+      LoadBalancers:
+        - ContainerName: pet-api
+          ContainerPort: 8080
+          TargetGroupArn: !Ref ApiTargetGroup
+      TaskDefinition: !Ref ApiTaskDefinition
+
+  ApiDistribution:
+    Type: AWS::CloudFront::Distribution
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: provide a public HTTPS URL without requiring a custom domain or ACM certificate
+        must:
+          - Redirect viewer HTTP to HTTPS.
+          - Disable caching for CRUD API requests.
+          - Keep the origin verification header synchronized with the ALB listener rule.
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: Pet API HTTPS demo
+        PriceClass: PriceClass_100
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        Origins:
+          - Id: PetApiAlbOrigin
+            DomainName: !GetAtt ApiLoadBalancer.DNSName
+            CustomHeaders:
+              - HeaderName: X-Origin-Verify
+                HeaderValue: !Ref OriginVerifyHeaderValue
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginProtocolPolicy: http-only
+              OriginSSLProtocols:
+                - TLSv1.2
+        DefaultCacheBehavior:
+          TargetOriginId: PetApiAlbOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+            - PUT
+            - POST
+            - PATCH
+            - DELETE
+          CachedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+        Restrictions:
+          GeoRestriction:
+            RestrictionType: none
+            Locations: []
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+Outputs:
+  ApiBaseUrl:
+    Description: Public HTTPS base URL for the API; append /pets.
+    Value: !Sub 'https://${ApiDistribution.DomainName}'
+  ApiServiceName:
+    Description: ECS API service logical deployment name.
+    Value: !Ref ApiService

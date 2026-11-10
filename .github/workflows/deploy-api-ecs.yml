@@ -1,0 +1,436 @@
+name: Deploy Pet API to ECS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-pet-api-ecs
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    name: Validate and deploy API with CloudFront HTTPS
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      AWS_REGION: us-east-1
+      AWS_ACCOUNT_ID: "622519216316"
+      ECS_CLUSTER: pet-app-angular21-cluster
+      EXECUTION_ROLE_ARN: arn:aws:iam::622519216316:role/LabRole
+      ECR_REPOSITORY: pet-api-oracle
+      STACK_NAME: pet-api-cloudfront
+      ORACLE_CREDENTIALS_SECRET: pet-api/oracle-db-credentials
+      ORACLE_WALLET_SECRET: pet-api/oracle-wallet
+      TEMPLATE_FILE: ecs/pet-api-cloudfront-stack.yml
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned CloudFormation linter
+        run: python -m pip install --disable-pip-version-check --no-input cfn-lint==1.60.0
+
+      - name: Lint CloudFormation template
+        run: cfn-lint --format json --regions "$AWS_REGION" "$TEMPLATE_FILE"
+
+      - name: Install and verify cfn-guard
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/cfn-guard.tar.gz"
+          curl --fail --silent --show-error --location \
+            https://github.com/aws-cloudformation/cloudformation-guard/releases/download/3.2.1/cfn-guard-v3-x86_64-ubuntu-latest.tar.gz \
+            --output "$archive"
+          echo "09c2b8cfd81d513374a8da89d4805dc55006a3da52bbf598e272022d4d198e94  $archive" \
+            | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/cfn-guard"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/cfn-guard"
+          chmod +x "$RUNNER_TEMP/cfn-guard/cfn-guard"
+          "$RUNNER_TEMP/cfn-guard/cfn-guard" --version
+
+      - name: Check CloudFormation security rules
+        run: >-
+          $RUNNER_TEMP/cfn-guard/cfn-guard validate
+          --rules ecs/cfn-guard/cloudfront_viewer_policy_https.guard
+          --data "$TEMPLATE_FILE"
+          --output-format json
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify Academy account and audit logging
+        shell: bash
+        run: |
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          if [[ "$account_id" != "$AWS_ACCOUNT_ID" ]]; then
+            echo "::error::Credentials point to account $account_id, not $AWS_ACCOUNT_ID."
+            exit 1
+          fi
+
+          trails="$(aws cloudtrail describe-trails \
+            --include-shadow-trails --region "$AWS_REGION" --output json)"
+          mapfile -t trail_entries < <(
+            jq -r --arg region "$AWS_REGION" \
+              '.trailList[]
+               | select(.IsMultiRegionTrail == true or .HomeRegion == $region)
+               | [.TrailARN, (.HomeRegion // $region)] | @tsv' \
+              <<< "$trails"
+          )
+          audit_ready=false
+
+          for trail_entry in "${trail_entries[@]}"; do
+            IFS=$'\t' read -r trail_arn trail_region <<< "$trail_entry"
+            status="$(aws cloudtrail get-trail-status --name "$trail_arn" --region "$trail_region")"
+            [[ "$(jq -r '.IsLogging' <<< "$status")" == "true" ]] || continue
+
+            selectors="$(aws cloudtrail get-event-selectors \
+              --trail-name "$trail_arn" --region "$trail_region")"
+            if jq -e '
+              any(.EventSelectors[]?;
+                .IncludeManagementEvents == true
+                and (.ReadWriteType == "All" or .ReadWriteType == "WriteOnly")
+                and ((.ExcludeManagementEventSources // []) | index("cloudformation.amazonaws.com") == null))
+              or any(.AdvancedEventSelectors[]?;
+                any(.FieldSelectors[]?;
+                  .Field == "eventCategory" and ((.Equals // []) | index("Management") != null))
+                and all(.FieldSelectors[]?;
+                  .Field == "eventCategory" or .Field == "eventSource")
+                and all(.FieldSelectors[]?; .Field != "eventSource"
+                  or (
+                    (
+                      ((.Equals // []) | length) == 0
+                      and ((.StartsWith // []) | length) == 0
+                      and ((.EndsWith // []) | length) == 0
+                      and ((.NotEquals // []) | length) == 0
+                      and ((.NotStartsWith // []) | length) == 0
+                      and ((.NotEndsWith // []) | length) == 0
+                    )
+                    or (
+                      ((.Equals // []) | index("cloudformation.amazonaws.com") != null)
+                      and ((.StartsWith // []) | length) == 0
+                      and ((.EndsWith // []) | length) == 0
+                      and ((.NotEquals // []) | length) == 0
+                      and ((.NotStartsWith // []) | length) == 0
+                      and ((.NotEndsWith // []) | length) == 0
+                    )
+                  ))
+            ' >/dev/null <<< "$selectors"; then
+              audit_ready=true
+              break
+            fi
+          done
+
+          if [[ "$audit_ready" != "true" ]]; then
+            echo "::error::No active CloudTrail trail was verified to record CloudFormation management events. No resources were changed."
+            exit 1
+          fi
+          echo "AWS account verified and an active CloudTrail management-event trail is configured."
+
+      - name: Verify secrets and deployment permissions
+        shell: bash
+        run: |
+          credentials_secret="$(aws secretsmanager describe-secret \
+            --secret-id "$ORACLE_CREDENTIALS_SECRET" --region "$AWS_REGION" \
+            --query '{ARN:ARN,KmsKeyId:KmsKeyId}' --output json)"
+          wallet_secret="$(aws secretsmanager describe-secret \
+            --secret-id "$ORACLE_WALLET_SECRET" --region "$AWS_REGION" \
+            --query '{ARN:ARN,KmsKeyId:KmsKeyId}' --output json)"
+          credentials_arn="$(jq -er '.ARN' <<< "$credentials_secret")"
+          wallet_arn="$(jq -er '.ARN' <<< "$wallet_secret")"
+          echo "Verified secret metadata:"
+          jq -n --arg credentials "$credentials_arn" --arg wallet "$wallet_arn" \
+            '{databaseCredentialsSecretArn:$credentials,oracleWalletSecretArn:$wallet}'
+
+          decisions="$(aws iam simulate-principal-policy \
+            --policy-source-arn "$EXECUTION_ROLE_ARN" \
+            --action-names secretsmanager:GetSecretValue \
+            --resource-arns "$credentials_arn" "$wallet_arn" \
+            --query 'EvaluationResults[?EvalDecision!=`allowed`].{Action:EvalActionName,Resource:EvalResourceName,Decision:EvalDecision}' \
+            --output json)"
+          if [[ "$decisions" != "[]" ]]; then
+            echo "::error::LabRole cannot read one or both Oracle secrets."
+            echo "$decisions"
+            exit 1
+          fi
+
+          for secret in "$credentials_secret" "$wallet_secret"; do
+            kms_key="$(jq -r '.KmsKeyId // empty' <<< "$secret")"
+            if [[ -n "$kms_key" && "$kms_key" != "alias/aws/secretsmanager" ]]; then
+              key_arn="$(aws kms describe-key --key-id "$kms_key" --region "$AWS_REGION" \
+                --query 'KeyMetadata.Arn' --output text)"
+              decrypt_decision="$(aws iam simulate-principal-policy \
+                --policy-source-arn "$EXECUTION_ROLE_ARN" \
+                --action-names kms:Decrypt --resource-arns "$key_arn" \
+                --query 'EvaluationResults[0].EvalDecision' --output text)"
+              if [[ "$decrypt_decision" != "allowed" ]]; then
+                echo "::error::LabRole cannot decrypt a customer-managed KMS key used by an Oracle secret."
+                exit 1
+              fi
+            fi
+          done
+
+          pass_role_decision="$(aws iam simulate-principal-policy \
+            --policy-source-arn "arn:aws:iam::$AWS_ACCOUNT_ID:role/voclabs" \
+            --action-names iam:PassRole --resource-arns "$EXECUTION_ROLE_ARN" \
+            --context-entries ContextKeyName=iam:PassedToService,ContextKeyValues=ecs-tasks.amazonaws.com,ContextKeyType=string \
+            --query 'EvaluationResults[0].EvalDecision' --output text)"
+          if [[ "$pass_role_decision" != "allowed" ]]; then
+            echo "::error::The GitHub Actions credentials cannot pass LabRole to ECS tasks."
+            exit 1
+          fi
+
+          {
+            echo "ORACLE_CREDENTIALS_SECRET_ARN=$credentials_arn"
+            echo "ORACLE_WALLET_SECRET_ARN=$wallet_arn"
+          } >> "$GITHUB_ENV"
+
+      - name: Verify infrastructure permissions
+        shell: bash
+        run: |
+          denied="$(aws iam simulate-principal-policy \
+            --policy-source-arn "arn:aws:iam::$AWS_ACCOUNT_ID:role/voclabs" \
+            --action-names \
+              cloudformation:CreateChangeSet cloudformation:ExecuteChangeSet \
+              cloudformation:DescribeStacks cloudformation:DescribeChangeSet \
+              cloudformation:DescribeEvents cloudformation:DescribeStackResource \
+              ec2:CreateSecurityGroup ec2:AuthorizeSecurityGroupIngress ec2:AuthorizeSecurityGroupEgress \
+              ec2:DeleteSecurityGroup ec2:CreateTags ec2:DeleteTags \
+              ec2:DescribeVpcs ec2:DescribeSubnets ec2:DescribeRouteTables \
+              ec2:DescribeManagedPrefixLists \
+              elasticloadbalancing:CreateLoadBalancer elasticloadbalancing:CreateTargetGroup \
+              elasticloadbalancing:CreateListener elasticloadbalancing:DescribeLoadBalancers \
+              elasticloadbalancing:DescribeTargetGroups elasticloadbalancing:DescribeListeners \
+              elasticloadbalancing:DeleteLoadBalancer elasticloadbalancing:DeleteTargetGroup \
+              elasticloadbalancing:DeleteListener elasticloadbalancing:AddTags \
+              ecs:RegisterTaskDefinition ecs:CreateService ecs:UpdateService ecs:DescribeServices ecs:TagResource \
+              ecs:DeleteService ecs:DeregisterTaskDefinition \
+              logs:CreateLogGroup logs:PutRetentionPolicy logs:DeleteLogGroup logs:TagResource \
+              cloudfront:CreateDistribution cloudfront:GetDistribution cloudfront:UpdateDistribution \
+              cloudfront:GetDistributionConfig cloudfront:DeleteDistribution \
+              cloudfront:ListTagsForResource cloudfront:TagResource \
+            --resource-arns '*' \
+            --query 'EvaluationResults[?EvalDecision!=`allowed`].{Action:EvalActionName,Decision:EvalDecision}' \
+            --output json)"
+          if [[ "$denied" != "[]" ]]; then
+            echo "::error::The current Academy session is missing permissions required by the ECS/CloudFront stack."
+            echo "$denied"
+            exit 1
+          fi
+
+      - name: Discover public VPC subnets and CloudFront prefix list
+        shell: bash
+        run: |
+          vpc_id="$(aws ec2 describe-vpcs \
+            --filters Name=isDefault,Values=true \
+            --query 'Vpcs[0].VpcId' --output text)"
+          if [[ -z "$vpc_id" || "$vpc_id" == "None" ]]; then
+            echo "::error::No default VPC was found."
+            exit 1
+          fi
+
+          subnets="$(aws ec2 describe-subnets \
+            --filters Name=vpc-id,Values="$vpc_id" Name=default-for-az,Values=true \
+            --output json)"
+          subnet_count="$(jq '.Subnets | length' <<< "$subnets")"
+          az_count="$(jq -r '.Subnets[].AvailabilityZone' <<< "$subnets" | sort -u | wc -l)"
+          if (( subnet_count < 2 || az_count < 2 )); then
+            echo "::error::The default VPC needs at least two available subnets in distinct Availability Zones."
+            exit 1
+          fi
+          subnet_ids="$(jq -r '[.Subnets[].SubnetId] | join(",")' <<< "$subnets")"
+
+          route_tables="$(aws ec2 describe-route-tables \
+            --filters Name=vpc-id,Values="$vpc_id" --output json)"
+          while IFS= read -r subnet_id; do
+            if ! jq -e --arg subnet "$subnet_id" '
+              [.RouteTables[] | select(
+                (any(.Associations[]?; .SubnetId == $subnet))
+                or (
+                  (all(.Associations[]?; .SubnetId != $subnet))
+                  and any(.Associations[]?; .Main == true)
+                )
+              )] | any(.[]; any(.Routes[]?;
+                .DestinationCidrBlock == "0.0.0.0/0"
+                and ((.GatewayId // "") | startswith("igw-"))))
+            ' >/dev/null <<< "$route_tables"; then
+              echo "::error::Subnet $subnet_id does not have a public IPv4 route through an Internet Gateway."
+              exit 1
+            fi
+          done < <(jq -r '.Subnets[].SubnetId' <<< "$subnets")
+
+          prefix_list_id="$(aws ec2 describe-managed-prefix-lists \
+            --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
+            --query 'PrefixLists[0].PrefixListId' --output text)"
+          if [[ -z "$prefix_list_id" || "$prefix_list_id" == "None" ]]; then
+            echo "::error::The AWS-managed CloudFront origin-facing prefix list was not found."
+            exit 1
+          fi
+          image_tag="$(aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --filter tagStatus=TAGGED \
+            --query 'sort_by(imageDetails[?imageTags!=null], &imagePushedAt)[-1].imageTags[0]' \
+            --output text)"
+          if [[ ! "$image_tag" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::No immutable SHA-tagged backend image is available in ECR."
+            exit 1
+          fi
+
+          {
+            echo "VPC_ID=$vpc_id"
+            echo "PUBLIC_SUBNET_IDS=$subnet_ids"
+            echo "CLOUDFRONT_PREFIX_LIST_ID=$prefix_list_id"
+            echo "BACKEND_IMAGE=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$image_tag"
+          } >> "$GITHUB_ENV"
+          echo "Verified $subnet_count public subnets across $az_count Availability Zones."
+          echo "Selected backend image tag: $image_tag"
+
+      - name: Validate template with CloudFormation
+        run: aws cloudformation validate-template --template-body "file://$TEMPLATE_FILE" --region "$AWS_REGION"
+
+      - name: Create and validate change set
+        shell: bash
+        env:
+          DEPLOYMENT_NONCE: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          if stack_details="$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" --region "$AWS_REGION" --output json 2>&1)"; then
+            stack_status="$(jq -r '.Stacks[0].StackStatus' <<< "$stack_details")"
+            case "$stack_status" in
+              CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
+                change_set_type=UPDATE
+                ;;
+              *)
+                echo "::error::The existing stack is in state $stack_status and cannot be safely updated."
+                exit 1
+                ;;
+            esac
+          elif [[ "$stack_details" == *"does not exist"* ]]; then
+            change_set_type=CREATE
+          else
+            echo "$stack_details"
+            exit 1
+          fi
+
+          if [[ "$change_set_type" == "UPDATE" ]]; then
+            distribution_id="$(aws cloudformation describe-stack-resource \
+              --stack-name "$STACK_NAME" --logical-resource-id ApiDistribution \
+              --region "$AWS_REGION" --query StackResourceDetail.PhysicalResourceId --output text)"
+            origin_header="$(aws cloudfront get-distribution-config \
+              --id "$distribution_id" --output json \
+              | jq -er '.DistributionConfig.Origins.Items[]
+                | select(.Id == "PetApiAlbOrigin")
+                | .CustomHeaders.Items[]
+                | select(.HeaderName == "X-Origin-Verify")
+                | .HeaderValue')"
+          else
+            origin_header="$(openssl rand -hex 32)"
+          fi
+          if [[ ! "$origin_header" =~ ^[A-Fa-f0-9]{64}$ ]]; then
+            echo "::error::The CloudFront origin verification header is missing or malformed."
+            exit 1
+          fi
+          echo "::add-mask::$origin_header"
+
+          change_set_name="deploy-api-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          parameters_file="$RUNNER_TEMP/cloudformation-parameters.json"
+          jq -n \
+            --arg cluster "$ECS_CLUSTER" \
+            --arg subnets "$PUBLIC_SUBNET_IDS" \
+            --arg vpc "$VPC_ID" \
+            --arg prefix_list "$CLOUDFRONT_PREFIX_LIST_ID" \
+            --arg image "$BACKEND_IMAGE" \
+            --arg execution_role "$EXECUTION_ROLE_ARN" \
+            --arg credentials_secret "$ORACLE_CREDENTIALS_SECRET_ARN" \
+            --arg wallet_secret "$ORACLE_WALLET_SECRET_ARN" \
+            --arg nonce "$DEPLOYMENT_NONCE" \
+            --arg origin_header "$origin_header" \
+            '[
+              {ParameterKey:"ClusterName",ParameterValue:$cluster},
+              {ParameterKey:"PublicSubnetIds",ParameterValue:$subnets},
+              {ParameterKey:"VpcId",ParameterValue:$vpc},
+              {ParameterKey:"CloudFrontPrefixListId",ParameterValue:$prefix_list},
+              {ParameterKey:"BackendImage",ParameterValue:$image},
+              {ParameterKey:"ExecutionRoleArn",ParameterValue:$execution_role},
+              {ParameterKey:"OracleCredentialsSecretArn",ParameterValue:$credentials_secret},
+              {ParameterKey:"OracleWalletSecretArn",ParameterValue:$wallet_secret},
+              {ParameterKey:"DeploymentNonce",ParameterValue:$nonce},
+              {ParameterKey:"OriginVerifyHeaderValue",ParameterValue:$origin_header}
+            ]' > "$parameters_file"
+
+          change_set_id="$(aws cloudformation create-change-set \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$change_set_name" \
+            --change-set-type "$change_set_type" \
+            --template-body "file://$TEMPLATE_FILE" \
+            --region "$AWS_REGION" \
+            --parameters "file://$parameters_file" \
+            --query Id --output text)"
+          echo "CHANGE_SET_ID=$change_set_id" >> "$GITHUB_ENV"
+
+          if ! aws cloudformation wait change-set-create-complete \
+            --change-set-name "$change_set_id" --region "$AWS_REGION"; then
+            aws cloudformation describe-events \
+              --change-set-name "$change_set_id" --region "$AWS_REGION" --output json || true
+            aws cloudformation describe-change-set \
+              --change-set-name "$change_set_id" --region "$AWS_REGION" \
+              --query '{Status:Status,StatusReason:StatusReason}' --output json || true
+            exit 1
+          fi
+
+          aws cloudformation describe-events \
+            --change-set-name "$change_set_id" --region "$AWS_REGION" \
+            --query 'OperationEvents[?ValidationStatus!=null].{Type:ValidationType,Status:ValidationStatus,Name:ValidationName,Properties:ValidationProperties}' \
+            --output json
+
+      - name: Execute validated change set
+        shell: bash
+        run: |
+          change_set_type="$(aws cloudformation describe-change-set \
+            --change-set-name "$CHANGE_SET_ID" --region "$AWS_REGION" \
+            --query ChangeSetType --output text)"
+          aws cloudformation execute-change-set \
+            --change-set-name "$CHANGE_SET_ID" --region "$AWS_REGION"
+          if [[ "$change_set_type" == "CREATE" ]]; then
+            waiter=stack-create-complete
+          else
+            waiter=stack-update-complete
+          fi
+          aws cloudformation wait "$waiter" --stack-name "$STACK_NAME" --region "$AWS_REGION"
+
+      - name: Wait for ECS service and CloudFront distribution
+        shell: bash
+        run: |
+          service_name="$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiServiceName'].OutputValue | [0]" \
+            --output text)"
+          distribution_id="$(aws cloudformation describe-stack-resource \
+            --stack-name "$STACK_NAME" --logical-resource-id ApiDistribution \
+            --region "$AWS_REGION" --query 'StackResourceDetail.PhysicalResourceId' --output text)"
+
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" --services "$service_name" --region "$AWS_REGION"
+          aws cloudfront wait distribution-deployed --id "$distribution_id"
+
+          api_url="$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiBaseUrl'].OutputValue | [0]" \
+            --output text)"
+          printf 'API HTTPS endpoint: %s/pets\n' "$api_url"
+          curl --fail --silent --show-error --retry 5 --retry-delay 10 \
+            "$api_url/pets" --output "$RUNNER_TEMP/pets-response.json"
+          jq -e 'type == "array"' "$RUNNER_TEMP/pets-response.json" >/dev/null
+          echo "API smoke test passed: GET /pets returned a JSON array."
