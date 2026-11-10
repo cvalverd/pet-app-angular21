@@ -1,0 +1,35 @@
+{
+  "family": "pet-app-angular21-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::622519216316:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::622519216316:role/pet-app-task-role",
+  "containerDefinitions": [
+    {
+      "name": "pet-app-angular21",
+      "image": "REPLACE_WITH_ECR_IMAGE",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 4000,
+          "hostPort": 4000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "PORT", "value": "4000" },
+        { "name": "API_URL", "value": "REPLACE_API_URL" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/pet-app-angular21",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
