@@ -40,7 +40,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check --no-input cfn-lint==1.60.0
 
       - name: Lint CloudFormation template
-        run: cfn-lint --format json --regions "$AWS_REGION" "$TEMPLATE_FILE"
+        run: cfn-lint --format json --regions="$AWS_REGION" "$TEMPLATE_FILE"
 
       - name: Install and verify cfn-guard
         shell: bash
