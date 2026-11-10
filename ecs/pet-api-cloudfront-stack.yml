@@ -168,8 +168,6 @@ Resources:
 
   ApiOriginHeaderRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
-    DependsOn:
-      - ApiListener
     Metadata:
       com.aws.cloudformation.Context:
         why: forward only requests carrying the private header configured on this CloudFront origin
@@ -289,7 +287,7 @@ Resources:
         Origins:
           - Id: PetApiAlbOrigin
             DomainName: !GetAtt ApiLoadBalancer.DNSName
-            CustomHeaders:
+            OriginCustomHeaders:
               - HeaderName: X-Origin-Verify
                 HeaderValue: !Ref OriginVerifyHeaderValue
             CustomOriginConfig:
