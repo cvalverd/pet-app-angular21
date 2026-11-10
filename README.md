@@ -74,6 +74,10 @@ lo que las llamadas a la API no funcionarán para visitantes hasta configurar la
 El workflow manual **Check ECS deployment prerequisites** hace una comprobación de solo lectura de
 la imagen, el clúster ECS, los roles de tarea y la red; no crea recursos.
 
+El workflow manual **Prepare Amazon ECS resources** crea el clúster Fargate, un grupo de logs con
+retención de 7 días si aún no existe y registra la task definition usando el `LabRole` de Academy.
+No inicia tareas ni publica el servicio mientras falte dominio/certificado HTTPS.
+
 ## Docker
 
 ```bash

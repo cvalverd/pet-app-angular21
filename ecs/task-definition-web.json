@@ -4,12 +4,11 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "512",
   "memory": "1024",
-  "executionRoleArn": "arn:aws:iam::622519216316:role/ecsTaskExecutionRole",
-  "taskRoleArn": "arn:aws:iam::622519216316:role/pet-app-task-role",
+  "executionRoleArn": "arn:aws:iam::622519216316:role/LabRole",
   "containerDefinitions": [
     {
       "name": "pet-app-angular21",
-      "image": "REPLACE_WITH_ECR_IMAGE",
+      "image": "622519216316.dkr.ecr.us-east-1.amazonaws.com/pet-app-angular21:b1432c8dc6faa00a902f364afb3cfaf04afbedd1",
       "essential": true,
       "portMappings": [
         {
@@ -19,8 +18,7 @@
         }
       ],
       "environment": [
-        { "name": "PORT", "value": "4000" },
-        { "name": "API_URL", "value": "REPLACE_API_URL" }
+        { "name": "PORT", "value": "4000" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
