@@ -81,8 +81,12 @@ Antes de ejecutarlo:
    imagen en ECR con el workflow **Publish backend container to Amazon ECR**.
 2. Verifica que `pet-api/oracle-db-credentials` sea un secreto JSON con las claves `DB_URL`,
    `DB_USERNAME` y `DB_PASSWORD`, y que `pet-api/oracle-wallet` contenga el ZIP de la wallet
-   codificado en Base64. El workflow solo consulta metadatos de los secretos; nunca imprime sus
-   valores.
+   codificado en Base64. En **Settings → Secrets and variables → Actions → Variables**, configura
+   `ORACLE_CREDENTIALS_SECRET_ARN` y `ORACLE_WALLET_SECRET_ARN` con los ARN completos de esos
+   secretos (incluido el sufijo al final del ARN). El workflow ya no consulta `DescribeSecret` ni
+   lee los valores. Si un secreto usa una clave KMS administrada por el cliente, configura también
+   la variable `ORACLE_CREDENTIALS_KMS_KEY_ARN` o `ORACLE_WALLET_KMS_KEY_ARN` correspondiente; con
+   la clave administrada por AWS, déjalas vacías.
 3. Inicia el laboratorio AWS Academy y actualiza `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` y
    `AWS_SESSION_TOKEN` en los secretos de Actions de este repositorio y del backend.
 4. No se configura un trail de CloudTrail. El despliegue continúa sin ese registro centralizado,

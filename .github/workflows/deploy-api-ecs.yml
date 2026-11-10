@@ -23,8 +23,10 @@ jobs:
       EXECUTION_ROLE_ARN: arn:aws:iam::622519216316:role/LabRole
       ECR_REPOSITORY: pet-api-oracle
       STACK_NAME: pet-api-cloudfront
-      ORACLE_CREDENTIALS_SECRET: pet-api/oracle-db-credentials
-      ORACLE_WALLET_SECRET: pet-api/oracle-wallet
+      ORACLE_CREDENTIALS_SECRET_ARN: ${{ vars.ORACLE_CREDENTIALS_SECRET_ARN }}
+      ORACLE_WALLET_SECRET_ARN: ${{ vars.ORACLE_WALLET_SECRET_ARN }}
+      ORACLE_CREDENTIALS_KMS_KEY_ARN: ${{ vars.ORACLE_CREDENTIALS_KMS_KEY_ARN }}
+      ORACLE_WALLET_KMS_KEY_ARN: ${{ vars.ORACLE_WALLET_KMS_KEY_ARN }}
       TEMPLATE_FILE: ecs/pet-api-cloudfront-stack.yml
 
     steps:
@@ -90,17 +92,14 @@ jobs:
       - name: Verify secrets and deployment permissions
         shell: bash
         run: |
-          credentials_secret="$(aws secretsmanager describe-secret \
-            --secret-id "$ORACLE_CREDENTIALS_SECRET" --region "$AWS_REGION" \
-            --query '{ARN:ARN,KmsKeyId:KmsKeyId}' --output json)"
-          wallet_secret="$(aws secretsmanager describe-secret \
-            --secret-id "$ORACLE_WALLET_SECRET" --region "$AWS_REGION" \
-            --query '{ARN:ARN,KmsKeyId:KmsKeyId}' --output json)"
-          credentials_arn="$(jq -er '.ARN' <<< "$credentials_secret")"
-          wallet_arn="$(jq -er '.ARN' <<< "$wallet_secret")"
-          echo "Verified secret metadata:"
-          jq -n --arg credentials "$credentials_arn" --arg wallet "$wallet_arn" \
-            '{databaseCredentialsSecretArn:$credentials,oracleWalletSecretArn:$wallet}'
+          credentials_arn="$ORACLE_CREDENTIALS_SECRET_ARN"
+          wallet_arn="$ORACLE_WALLET_SECRET_ARN"
+          secret_arn_pattern="^arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:[^:]+-[A-Za-z0-9]{6}$"
+          if [[ ! "$credentials_arn" =~ $secret_arn_pattern || ! "$wallet_arn" =~ $secret_arn_pattern ]]; then
+            echo "::error::Set ORACLE_CREDENTIALS_SECRET_ARN and ORACLE_WALLET_SECRET_ARN to the full Secrets Manager ARNs in GitHub Actions Variables."
+            exit 1
+          fi
+          echo "Using configured secret ARNs (values are not read by this workflow)."
 
           decisions="$(aws iam simulate-principal-policy \
             --policy-source-arn "$EXECUTION_ROLE_ARN" \
@@ -114,19 +113,21 @@ jobs:
             exit 1
           fi
 
-          for secret in "$credentials_secret" "$wallet_secret"; do
-            kms_key="$(jq -r '.KmsKeyId // empty' <<< "$secret")"
-            if [[ -n "$kms_key" && "$kms_key" != "alias/aws/secretsmanager" ]]; then
-              key_arn="$(aws kms describe-key --key-id "$kms_key" --region "$AWS_REGION" \
-                --query 'KeyMetadata.Arn' --output text)"
-              decrypt_decision="$(aws iam simulate-principal-policy \
-                --policy-source-arn "$EXECUTION_ROLE_ARN" \
-                --action-names kms:Decrypt --resource-arns "$key_arn" \
-                --query 'EvaluationResults[0].EvalDecision' --output text)"
-              if [[ "$decrypt_decision" != "allowed" ]]; then
-                echo "::error::LabRole cannot decrypt a customer-managed KMS key used by an Oracle secret."
-                exit 1
-              fi
+          for key_arn in "$ORACLE_CREDENTIALS_KMS_KEY_ARN" "$ORACLE_WALLET_KMS_KEY_ARN"; do
+            if [[ -z "$key_arn" ]]; then
+              continue
+            fi
+            if [[ ! "$key_arn" =~ ^arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:key/[A-Fa-f0-9-]+$ ]]; then
+              echo "::error::Configured customer-managed KMS key ARN is invalid for this account and region."
+              exit 1
+            fi
+            decrypt_decision="$(aws iam simulate-principal-policy \
+              --policy-source-arn "$EXECUTION_ROLE_ARN" \
+              --action-names kms:Decrypt --resource-arns "$key_arn" \
+              --query 'EvaluationResults[0].EvalDecision' --output text)"
+            if [[ "$decrypt_decision" != "allowed" ]]; then
+              echo "::error::LabRole cannot decrypt a configured customer-managed KMS key."
+              exit 1
             fi
           done
 
