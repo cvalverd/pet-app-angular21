@@ -65,11 +65,21 @@ jobs:
             --query 'imageDetails[].{tags:imageTags,digest:imageDigest,pushed:imagePushedAt}' \
             --output json
 
-          for role in ecsTaskExecutionRole pet-app-task-role; do
+          for role in ecsTaskExecutionRole pet-app-task-role LabRole; do
             check_read "IAM role $role" aws iam get-role \
               --role-name "$role" --query 'Role.{Arn:Arn,Trust:AssumeRolePolicyDocument}' \
               --output json
           done
+          check_read "LabRole attached policies" aws iam list-attached-role-policies \
+            --role-name LabRole --query 'AttachedPolicies[].{Name:PolicyName,Arn:PolicyArn}' \
+            --output json
+          check_read "ECS deployment authorization simulation" aws iam simulate-principal-policy \
+            --policy-source-arn "arn:aws:iam::$AWS_ACCOUNT_ID:role/voclabs" \
+            --action-names ecs:CreateCluster ecs:RegisterTaskDefinition ecs:CreateService \
+              ecs:UpdateService iam:PassRole \
+            --resource-arns '*' \
+            --query 'EvaluationResults[].{Action:EvalActionName,Decision:EvalDecision,MissingContext:MissingContextValues}' \
+            --output json
 
           check_read "Default VPC" aws ec2 describe-vpcs \
             --region "$AWS_REGION" --filters Name=isDefault,Values=true \
