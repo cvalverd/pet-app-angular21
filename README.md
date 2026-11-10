@@ -85,16 +85,11 @@ Antes de ejecutarlo:
    valores.
 3. Inicia el laboratorio AWS Academy y actualiza `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` y
    `AWS_SESSION_TOKEN` en los secretos de Actions de este repositorio y del backend.
-4. Ejecuta primero **Set up CloudTrail audit logging** desde **Actions**. Si no hay un trail
-   existente en `us-east-1` ni uno multi-región, crea por CloudFormation un trail de eventos de
-   administración y un bucket privado con cifrado SSE-S3 y expiración de objetos de unos 90 días,
-   incluidas sus versiones anteriores. No habilita eventos de datos ni usa una clave KMS. El bucket
-   y el trail se conservan aunque se elimine su stack; el almacenamiento y las solicitudes de S3
-   pueden generar costos. Si ya hay trails que no pasan la comprobación, el workflow se detiene para
-   evitar duplicarlos o modificarlos.
-5. Ejecuta **Deploy Pet API to ECS**. El workflow valida la plantilla, permisos,
-   CloudTrail y conectividad pública de la VPC antes de desplegar; después espera al servicio y hace
-   un `GET /pets` de comprobación.
+4. No se configura un trail de CloudTrail. El despliegue continúa sin ese registro centralizado,
+   por lo que habrá menos auditoría de las operaciones de infraestructura.
+5. Ejecuta **Deploy Pet API to ECS**. El workflow valida la plantilla, la cuenta, los permisos y la
+   conectividad pública de la VPC antes de desplegar; después espera al servicio y hace una
+   comprobación `GET /pets`.
 
 El ALB solo acepta conexiones desde el prefijo administrado de CloudFront y exige además una
 cabecera privada exclusiva de la distribución. CloudFront redirige visitantes a HTTPS y desactiva
