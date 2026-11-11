@@ -1,0 +1,26 @@
+rule DEMO_ALB_HTTP_INGRESS {
+  Resources.LoadBalancerSecurityGroup.Properties.SecurityGroupIngress.* {
+    IpProtocol == "tcp"
+    FromPort == 80
+    ToPort == 80
+    CidrIp == "0.0.0.0/0"
+  }
+}
+
+rule ECS_TASK_INGRESS_RESTRICTED_TO_ALB {
+  Resources.ApiTaskSecurityGroup.Properties.SecurityGroupIngress.* {
+    FromPort == 8080
+    ToPort == 8080
+    SourceSecurityGroupId exists
+    CidrIp not exists
+    CidrIpv6 not exists
+  }
+}
+
+rule API_LISTENER_FORWARDS_HTTP {
+  Resources.ApiListener.Properties {
+    Port == 80
+    Protocol == "HTTP"
+    DefaultActions.*.Type == "forward"
+  }
+}

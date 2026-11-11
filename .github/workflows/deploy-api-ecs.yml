@@ -13,7 +13,7 @@ concurrency:
 jobs:
   deploy:
     if: github.ref == 'refs/heads/main'
-    name: Validate and deploy API with CloudFront HTTPS
+    name: Validate and deploy API with public HTTP
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -22,12 +22,12 @@ jobs:
       ECS_CLUSTER: pet-app-angular21-cluster
       EXECUTION_ROLE_ARN: arn:aws:iam::622519216316:role/LabRole
       ECR_REPOSITORY: pet-api-oracle
-      STACK_NAME: pet-api-cloudfront
+      STACK_NAME: pet-api-http
       ORACLE_CREDENTIALS_SECRET_ARN: ${{ vars.ORACLE_CREDENTIALS_SECRET_ARN }}
       ORACLE_WALLET_SECRET_ARN: ${{ vars.ORACLE_WALLET_SECRET_ARN }}
       ORACLE_CREDENTIALS_KMS_KEY_ARN: ${{ vars.ORACLE_CREDENTIALS_KMS_KEY_ARN }}
       ORACLE_WALLET_KMS_KEY_ARN: ${{ vars.ORACLE_WALLET_KMS_KEY_ARN }}
-      TEMPLATE_FILE: ecs/pet-api-cloudfront-stack.yml
+      TEMPLATE_FILE: ecs/pet-api-http-stack.yml
 
     steps:
       - name: Check out source
@@ -67,7 +67,7 @@ jobs:
       - name: Check CloudFormation security rules
         run: >-
           "$CFN_GUARD_BIN" validate
-          --rules ecs/cfn-guard/cloudfront_viewer_policy_https.guard
+          --rules ecs/cfn-guard/pet_api_http.guard
           --data "$TEMPLATE_FILE"
           --output-format json
 
@@ -167,19 +167,16 @@ jobs:
               ecs:RegisterTaskDefinition ecs:CreateService ecs:UpdateService ecs:DescribeServices ecs:TagResource \
               ecs:DeleteService ecs:DeregisterTaskDefinition \
               logs:CreateLogGroup logs:PutRetentionPolicy logs:DeleteLogGroup logs:TagResource \
-              cloudfront:CreateDistribution cloudfront:GetDistribution cloudfront:UpdateDistribution \
-              cloudfront:GetDistributionConfig cloudfront:DeleteDistribution \
-              cloudfront:ListTagsForResource cloudfront:TagResource \
             --resource-arns '*' \
             --query 'EvaluationResults[?EvalDecision!=`allowed`].{Action:EvalActionName,Decision:EvalDecision}' \
             --output json)"
           if [[ "$denied" != "[]" ]]; then
-            echo "::error::The current Academy session is missing permissions required by the ECS/CloudFront stack."
+            echo "::error::The current Academy session is missing permissions required by the ECS/ALB stack."
             echo "$denied"
             exit 1
           fi
 
-      - name: Discover public VPC subnets and CloudFront prefix list
+      - name: Discover public VPC subnets
         shell: bash
         run: |
           vpc_id="$(aws ec2 describe-vpcs \
@@ -220,13 +217,6 @@ jobs:
             fi
           done < <(jq -r '.Subnets[].SubnetId' <<< "$subnets")
 
-          prefix_list_id="$(aws ec2 describe-managed-prefix-lists \
-            --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
-            --query 'PrefixLists[0].PrefixListId' --output text)"
-          if [[ -z "$prefix_list_id" || "$prefix_list_id" == "None" ]]; then
-            echo "::error::The AWS-managed CloudFront origin-facing prefix list was not found."
-            exit 1
-          fi
           image_tag="$(aws ecr describe-images \
             --repository-name "$ECR_REPOSITORY" \
             --filter tagStatus=TAGGED \
@@ -240,7 +230,6 @@ jobs:
           {
             echo "VPC_ID=$vpc_id"
             echo "PUBLIC_SUBNET_IDS=$subnet_ids"
-            echo "CLOUDFRONT_PREFIX_LIST_ID=$prefix_list_id"
             echo "BACKEND_IMAGE=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$image_tag"
           } >> "$GITHUB_ENV"
           echo "Verified $subnet_count public subnets across $az_count Availability Zones."
@@ -273,50 +262,26 @@ jobs:
             exit 1
           fi
 
-          if [[ "$change_set_type" == "UPDATE" ]]; then
-            distribution_id="$(aws cloudformation describe-stack-resource \
-              --stack-name "$STACK_NAME" --logical-resource-id ApiDistribution \
-              --region "$AWS_REGION" --query StackResourceDetail.PhysicalResourceId --output text)"
-            origin_header="$(aws cloudfront get-distribution-config \
-              --id "$distribution_id" --output json \
-              | jq -er '.DistributionConfig.Origins.Items[]
-                | select(.Id == "PetApiAlbOrigin")
-                | .CustomHeaders.Items[]
-                | select(.HeaderName == "X-Origin-Verify")
-                | .HeaderValue')"
-          else
-            origin_header="$(openssl rand -hex 32)"
-          fi
-          if [[ ! "$origin_header" =~ ^[A-Fa-f0-9]{64}$ ]]; then
-            echo "::error::The CloudFront origin verification header is missing or malformed."
-            exit 1
-          fi
-          echo "::add-mask::$origin_header"
-
           change_set_name="deploy-api-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           parameters_file="$RUNNER_TEMP/cloudformation-parameters.json"
           jq -n \
             --arg cluster "$ECS_CLUSTER" \
             --arg subnets "$PUBLIC_SUBNET_IDS" \
             --arg vpc "$VPC_ID" \
-            --arg prefix_list "$CLOUDFRONT_PREFIX_LIST_ID" \
             --arg image "$BACKEND_IMAGE" \
             --arg execution_role "$EXECUTION_ROLE_ARN" \
             --arg credentials_secret "$ORACLE_CREDENTIALS_SECRET_ARN" \
             --arg wallet_secret "$ORACLE_WALLET_SECRET_ARN" \
             --arg nonce "$DEPLOYMENT_NONCE" \
-            --arg origin_header "$origin_header" \
             '[
               {ParameterKey:"ClusterName",ParameterValue:$cluster},
               {ParameterKey:"PublicSubnetIds",ParameterValue:$subnets},
               {ParameterKey:"VpcId",ParameterValue:$vpc},
-              {ParameterKey:"CloudFrontPrefixListId",ParameterValue:$prefix_list},
               {ParameterKey:"BackendImage",ParameterValue:$image},
               {ParameterKey:"ExecutionRoleArn",ParameterValue:$execution_role},
               {ParameterKey:"OracleCredentialsSecretArn",ParameterValue:$credentials_secret},
               {ParameterKey:"OracleWalletSecretArn",ParameterValue:$wallet_secret},
-              {ParameterKey:"DeploymentNonce",ParameterValue:$nonce},
-              {ParameterKey:"OriginVerifyHeaderValue",ParameterValue:$origin_header}
+              {ParameterKey:"DeploymentNonce",ParameterValue:$nonce}
             ]' > "$parameters_file"
 
           change_set_id="$(aws cloudformation create-change-set \
@@ -359,26 +324,21 @@ jobs:
           fi
           aws cloudformation wait "$waiter" --stack-name "$STACK_NAME" --region "$AWS_REGION"
 
-      - name: Wait for ECS service and CloudFront distribution
+      - name: Wait for ECS service and test the public HTTP endpoint
         shell: bash
         run: |
           service_name="$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='ApiServiceName'].OutputValue | [0]" \
             --output text)"
-          distribution_id="$(aws cloudformation describe-stack-resource \
-            --stack-name "$STACK_NAME" --logical-resource-id ApiDistribution \
-            --region "$AWS_REGION" --query 'StackResourceDetail.PhysicalResourceId' --output text)"
-
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" --services "$service_name" --region "$AWS_REGION"
-          aws cloudfront wait distribution-deployed --id "$distribution_id"
 
           api_url="$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='ApiBaseUrl'].OutputValue | [0]" \
             --output text)"
-          printf 'API HTTPS endpoint: %s/pets\n' "$api_url"
+          printf 'API HTTP endpoint (unencrypted; demo only): %s/pets\n' "$api_url"
           curl --fail --silent --show-error --retry 5 --retry-delay 10 \
             "$api_url/pets" --output "$RUNNER_TEMP/pets-response.json"
           jq -e 'type == "array"' "$RUNNER_TEMP/pets-response.json" >/dev/null

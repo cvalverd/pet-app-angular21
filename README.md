@@ -71,11 +71,13 @@ deniegue ECR harán fallar el workflow. Este workflow solo publica la imagen en 
 actualiza recursos ECS. La aplicación actualmente fija la API en `http://localhost:8080/pets`, por
 lo que las llamadas a la API no funcionarán para visitantes hasta configurar la URL del backend.
 
-### Desplegar la API Java en ECS con HTTPS
+### Desplegar la API Java en ECS por HTTP (solo demo)
 
 El workflow manual **Deploy Pet API to ECS** publica la API `pet-api-oracle` como un servicio
-Fargate y la expone por HTTPS mediante CloudFront, sin requerir dominio ni certificado propio.
-Antes de ejecutarlo:
+Fargate detrás de un Application Load Balancer público. El acceso será por HTTP, sin cifrado TLS,
+porque el rol actual de AWS Academy no permite las acciones de CloudFront y no hay un certificado
+ACM configurado. **Es solo para una demo: no uses datos reales o sensibles.** La API no tiene
+autenticación y cualquiera que conozca la URL podrá consultar y modificar mascotas.
 
 1. En el repositorio `cvalverd/pet-api-oracle`, actualiza el Dockerfile/entrypoint y publica una
    imagen en ECR con el workflow **Publish backend container to Amazon ECR**.
@@ -89,20 +91,17 @@ Antes de ejecutarlo:
    la clave administrada por AWS, déjalas vacías.
 3. Inicia el laboratorio AWS Academy y actualiza `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` y
    `AWS_SESSION_TOKEN` en los secretos de Actions de este repositorio y del backend.
-4. No se configura un trail de CloudTrail. El despliegue continúa sin ese registro centralizado,
-   por lo que habrá menos auditoría de las operaciones de infraestructura.
+4. No se configura un trail de CloudTrail; habrá menos auditoría centralizada de las operaciones de
+   infraestructura.
 5. Ejecuta **Deploy Pet API to ECS**. El workflow valida la plantilla, la cuenta, los permisos y la
    conectividad pública de la VPC antes de desplegar; después espera al servicio y hace una
    comprobación `GET /pets`.
 
-El ALB solo acepta conexiones desde el prefijo administrado de CloudFront y exige además una
-cabecera privada exclusiva de la distribución. CloudFront redirige visitantes a HTTPS y desactiva
-el caché para las operaciones CRUD. La API sigue sin autenticación: cualquier persona que conozca
-su URL podrá consultar y modificar mascotas, por lo que este endpoint es solo para una demo.
-
-La salud del servicio depende de que Oracle acepte conexiones desde la red de AWS. El frontend no
-se conecta automáticamente a este endpoint: `apiUrl` sigue compilada como
-`http://localhost:8080/pets` hasta que se configure y publique una URL de API adecuada.
+El puerto 80 del ALB queda accesible desde Internet y el tráfico entre el navegador y la API viaja
+sin cifrar. La health check del servicio depende de que Oracle acepte conexiones desde la red de
+AWS. El frontend no se conecta automáticamente a este endpoint: `apiUrl` sigue compilada como
+`http://localhost:8080/pets` hasta que se configure y publique una URL de API adecuada. Un sitio
+frontend servido por HTTPS puede además bloquear llamadas a esta API HTTP por contenido mixto.
 
 ## Docker
 

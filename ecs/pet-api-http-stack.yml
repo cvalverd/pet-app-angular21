@@ -1,14 +1,14 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  Pet API on Fargate behind CloudFront HTTPS; restricts origin ingress to CloudFront
-  and injects Oracle connection material from Secrets Manager.
+  Pet API on Fargate behind a public HTTP load balancer for a temporary demo; Oracle
+  connection material is injected from Secrets Manager.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@v3
   com.aws.cloudformation.Context:
-    arch: CloudFront HTTPS -> header-guarded ALB HTTP -> ECS Fargate -> Oracle Autonomous Database
+    arch: public ALB HTTP -> ECS Fargate -> Oracle Autonomous Database
     must:
-      - Keep the ALB origin reachable only from CloudFront origin-facing prefix list.
+      - Public HTTP is demo-only; do not use real or sensitive data because traffic is unencrypted and the API has no authentication.
       - Keep ECS task ingress limited to the ALB security group.
       - Inject DB credentials and wallet only from Secrets Manager; never place values in this template.
       - Keep the Oracle wallet out of the container image and source repository.
@@ -27,10 +27,6 @@ Parameters:
   VpcId:
     Type: AWS::EC2::VPC::Id
     Description: VPC that contains the public subnets.
-  CloudFrontPrefixListId:
-    Type: String
-    AllowedPattern: '^pl-[0-9a-f]+$'
-    Description: AWS-managed CloudFront origin-facing IPv4 prefix list.
   BackendImage:
     Type: String
     AllowedPattern: '^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/pet-api-oracle:[0-9a-f]{40}$'
@@ -51,11 +47,6 @@ Parameters:
     Type: String
     AllowedPattern: '^[A-Za-z0-9-]{1,64}$'
     Description: Unique deployment identifier used to refresh tasks and their injected secrets.
-  OriginVerifyHeaderValue:
-    Type: String
-    NoEcho: true
-    AllowedPattern: '^[A-Fa-f0-9]{64}$'
-    Description: Private shared secret for restricting the ALB listener to this CloudFront distribution.
 Resources:
   ApiLogGroup:
     Type: AWS::Logs::LogGroup
@@ -72,19 +63,20 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Metadata:
       com.aws.cloudformation.Context:
-        why: admit origin traffic only from CloudFront edge servers; the header listener rule further binds requests to this distribution
+        why: expose the demo API through the ALB over plain HTTP as required by the Academy permissions available
         must:
-          - Do not add general Internet CIDR ingress.
+          - Keep this configuration demo-only; requests and responses are unencrypted and the API has no authentication.
+          - Allow only TCP port 80 from the public Internet; do not expose the task port directly.
           - Do not attach this group to ECS tasks or unrelated resources.
     Properties:
-      GroupDescription: CloudFront-only origin traffic for the pet API.
+      GroupDescription: Public HTTP access to the demo pet API.
       VpcId: !Ref VpcId
       SecurityGroupIngress:
-        - Description: CloudFront origin-facing servers only.
+        - Description: Public HTTP for the temporary demo; no TLS.
           IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          SourcePrefixListId: !Ref CloudFrontPrefixListId
+          CidrIp: 0.0.0.0/0
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -113,10 +105,9 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Metadata:
       com.aws.cloudformation.Context:
-        why: stable HTTP origin for CloudFront; no direct viewer ingress
+        why: public HTTP endpoint for a temporary demo because CloudFront is not authorized in the Academy account
         must:
-          - Keep internet-facing access restricted by LoadBalancerSecurityGroup.
-          - Keep origin transport HTTP only behind CloudFront HTTPS.
+          - Keep this endpoint demo-only; all viewer-to-API traffic is unencrypted.
     Properties:
       Scheme: internet-facing
       Type: application
@@ -151,39 +142,15 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Metadata:
       com.aws.cloudformation.Context:
-        why: leave the ALB origin HTTP-only; CloudFront enforces viewer HTTPS and supplies the private origin header
+        why: forward public HTTP requests to the API target group without an HTTPS termination layer
         must:
-          - Keep origin ingress restricted to CloudFront edge servers by the load balancer security group.
-          - Keep the default action fixed at 403 and forward only through the origin header listener rule.
+          - Keep this HTTP-only listener for temporary demo use; never send sensitive data.
+          - Forward requests only to the API target group.
     Properties:
       LoadBalancerArn: !Ref ApiLoadBalancer
       Port: 80
       Protocol: HTTP
       DefaultActions:
-        - Type: fixed-response
-          FixedResponseConfig:
-            StatusCode: '403'
-            ContentType: text/plain
-            MessageBody: Forbidden
-
-  ApiOriginHeaderRule:
-    Type: AWS::ElasticLoadBalancingV2::ListenerRule
-    Metadata:
-      com.aws.cloudformation.Context:
-        why: forward only requests carrying the private header configured on this CloudFront origin
-        must:
-          - Keep the header value secret and synchronized with the CloudFront origin configuration.
-          - Keep the listener default action denying requests without the origin verification header.
-    Properties:
-      ListenerArn: !Ref ApiListener
-      Priority: 1
-      Conditions:
-        - Field: http-header
-          HttpHeaderConfig:
-            HttpHeaderName: X-Origin-Verify
-            Values:
-              - !Ref OriginVerifyHeaderValue
-      Actions:
         - Type: forward
           TargetGroupArn: !Ref ApiTargetGroup
 
@@ -236,8 +203,6 @@ Resources:
 
   ApiService:
     Type: AWS::ECS::Service
-    DependsOn:
-      - ApiOriginHeaderRule
     Metadata:
       com.aws.cloudformation.Context:
         why: keep one API task available behind the load balancer for temporary public demo access
@@ -268,61 +233,10 @@ Resources:
           TargetGroupArn: !Ref ApiTargetGroup
       TaskDefinition: !Ref ApiTaskDefinition
 
-  ApiDistribution:
-    Type: AWS::CloudFront::Distribution
-    Metadata:
-      com.aws.cloudformation.Context:
-        why: provide a public HTTPS URL without requiring a custom domain or ACM certificate
-        must:
-          - Redirect viewer HTTP to HTTPS.
-          - Disable caching for CRUD API requests.
-          - Keep the origin verification header synchronized with the ALB listener rule.
-    Properties:
-      DistributionConfig:
-        Enabled: true
-        Comment: Pet API HTTPS demo
-        PriceClass: PriceClass_100
-        HttpVersion: http2and3
-        IPV6Enabled: true
-        Origins:
-          - Id: PetApiAlbOrigin
-            DomainName: !GetAtt ApiLoadBalancer.DNSName
-            OriginCustomHeaders:
-              - HeaderName: X-Origin-Verify
-                HeaderValue: !Ref OriginVerifyHeaderValue
-            CustomOriginConfig:
-              HTTPPort: 80
-              HTTPSPort: 443
-              OriginProtocolPolicy: http-only
-              OriginSSLProtocols:
-                - TLSv1.2
-        DefaultCacheBehavior:
-          TargetOriginId: PetApiAlbOrigin
-          ViewerProtocolPolicy: redirect-to-https
-          AllowedMethods:
-            - GET
-            - HEAD
-            - OPTIONS
-            - PUT
-            - POST
-            - PATCH
-            - DELETE
-          CachedMethods:
-            - GET
-            - HEAD
-            - OPTIONS
-          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
-        Restrictions:
-          GeoRestriction:
-            RestrictionType: none
-            Locations: []
-        ViewerCertificate:
-          CloudFrontDefaultCertificate: true
 Outputs:
   ApiBaseUrl:
-    Description: Public HTTPS base URL for the API; append /pets.
-    Value: !Sub 'https://${ApiDistribution.DomainName}'
+    Description: Public HTTP base URL for the API; append /pets. Demo only; traffic is unencrypted.
+    Value: !Sub 'http://${ApiLoadBalancer.DNSName}'
   ApiServiceName:
     Description: ECS API service logical deployment name.
     Value: !Ref ApiService
