@@ -109,12 +109,24 @@ jobs:
           fi
           echo "Using configured resource identifiers (secret and wallet values are not read by this workflow)."
 
-          decisions="$(aws iam simulate-principal-policy \
+          if ! decisions="$(aws iam simulate-principal-policy \
             --policy-source-arn "$EXECUTION_ROLE_ARN" \
             --action-names secretsmanager:GetSecretValue \
             --resource-arns "$credentials_arn" \
             --query 'EvaluationResults[?EvalDecision!=`allowed`].{Action:EvalActionName,Resource:EvalResourceName,Decision:EvalDecision}' \
-            --output json)"
+            --output json 2>&1)"; then
+            if [[ "$decisions" == *"not authorized to perform: iam:SimulatePrincipalPolicy"* && "$decisions" == *"explicit deny in a service control policy"* ]]; then
+              echo "::warning::The Academy service control policy blocks IAM policy simulation; deployment and task startup will validate the configured permissions."
+              {
+                echo "ORACLE_CREDENTIALS_SECRET_ARN=$credentials_arn"
+                echo "ORACLE_WALLET_S3_BUCKET=$wallet_bucket"
+                echo "ORACLE_WALLET_S3_KEY=$wallet_key"
+              } >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "$decisions" >&2
+            exit 1
+          fi
           if [[ "$decisions" != "[]" ]]; then
             echo "::error::The ECS execution role cannot read the Oracle database credentials secret."
             echo "$decisions"
@@ -173,7 +185,7 @@ jobs:
       - name: Verify infrastructure permissions
         shell: bash
         run: |
-          denied="$(aws iam simulate-principal-policy \
+          if ! denied="$(aws iam simulate-principal-policy \
             --policy-source-arn "arn:aws:iam::$AWS_ACCOUNT_ID:role/voclabs" \
             --action-names \
               cloudformation:CreateChangeSet cloudformation:ExecuteChangeSet \
@@ -193,7 +205,14 @@ jobs:
               logs:CreateLogGroup logs:PutRetentionPolicy logs:DeleteLogGroup logs:TagResource \
             --resource-arns '*' \
             --query 'EvaluationResults[?EvalDecision!=`allowed`].{Action:EvalActionName,Decision:EvalDecision}' \
-            --output json)"
+            --output json 2>&1)"; then
+            if [[ "$denied" == *"not authorized to perform: iam:SimulatePrincipalPolicy"* && "$denied" == *"explicit deny in a service control policy"* ]]; then
+              echo "::warning::The Academy service control policy blocks IAM policy simulation; actual AWS operations will validate the required permissions."
+              exit 0
+            fi
+            echo "$denied" >&2
+            exit 1
+          fi
           if [[ "$denied" != "[]" ]]; then
             echo "::error::The current Academy session is missing permissions required by the ECS/ALB stack."
             echo "$denied"
