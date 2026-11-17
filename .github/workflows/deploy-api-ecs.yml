@@ -295,6 +295,9 @@ jobs:
                 ;;
               *)
                 echo "::error::The existing stack is in state $stack_status and cannot be safely updated."
+                aws cloudformation describe-stack-events \
+                  --stack-name "$STACK_NAME" --region "$AWS_REGION" \
+                  --max-items 30 --output json || true
                 exit 1
                 ;;
             esac
