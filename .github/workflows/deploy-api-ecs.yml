@@ -24,9 +24,9 @@ jobs:
       ECR_REPOSITORY: pet-api-oracle
       STACK_NAME: pet-api-http
       ORACLE_CREDENTIALS_SECRET_ARN: ${{ vars.ORACLE_CREDENTIALS_SECRET_ARN }}
-      ORACLE_WALLET_SECRET_ARN: ${{ vars.ORACLE_WALLET_SECRET_ARN }}
+      ORACLE_WALLET_S3_BUCKET: ${{ vars.ORACLE_WALLET_S3_BUCKET }}
+      ORACLE_WALLET_S3_KEY: ${{ vars.ORACLE_WALLET_S3_KEY }}
       ORACLE_CREDENTIALS_KMS_KEY_ARN: ${{ vars.ORACLE_CREDENTIALS_KMS_KEY_ARN }}
-      ORACLE_WALLET_KMS_KEY_ARN: ${{ vars.ORACLE_WALLET_KMS_KEY_ARN }}
       TEMPLATE_FILE: ecs/pet-api-http-stack.yml
 
     steps:
@@ -87,33 +87,41 @@ jobs:
             echo "::error::Credentials point to account $account_id, not $AWS_ACCOUNT_ID."
             exit 1
           fi
-          echo "AWS account verified. CloudTrail trail setup is intentionally omitted."
+          echo "AWS account verified. CloudTrail data-event logging is managed outside this stack."
 
       - name: Verify secrets and deployment permissions
         shell: bash
         run: |
           credentials_arn="$ORACLE_CREDENTIALS_SECRET_ARN"
-          wallet_arn="$ORACLE_WALLET_SECRET_ARN"
+          task_role_arn="$EXECUTION_ROLE_ARN"
+          wallet_bucket="$ORACLE_WALLET_S3_BUCKET"
+          wallet_key="$ORACLE_WALLET_S3_KEY"
           secret_arn_pattern="^arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:[^:]+-[A-Za-z0-9]{6}$"
-          if [[ ! "$credentials_arn" =~ $secret_arn_pattern || ! "$wallet_arn" =~ $secret_arn_pattern ]]; then
-            echo "::error::Set ORACLE_CREDENTIALS_SECRET_ARN and ORACLE_WALLET_SECRET_ARN to the full Secrets Manager ARNs in GitHub Actions Variables."
+          bucket_pattern="^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+          wallet_key_pattern="^[A-Za-z0-9._/-]+$"
+          if [[ ! "$credentials_arn" =~ $secret_arn_pattern ]]; then
+            echo "::error::Set ORACLE_CREDENTIALS_SECRET_ARN to the full database credentials secret ARN in GitHub Actions Variables."
             exit 1
           fi
-          echo "Using configured secret ARNs (values are not read by this workflow)."
+          if [[ ! "$wallet_bucket" =~ $bucket_pattern || ! "$wallet_key" =~ $wallet_key_pattern ]]; then
+            echo "::error::Set ORACLE_WALLET_S3_BUCKET and ORACLE_WALLET_S3_KEY to the private wallet object's bucket and key."
+            exit 1
+          fi
+          echo "Using configured resource identifiers (secret and wallet values are not read by this workflow)."
 
           decisions="$(aws iam simulate-principal-policy \
             --policy-source-arn "$EXECUTION_ROLE_ARN" \
             --action-names secretsmanager:GetSecretValue \
-            --resource-arns "$credentials_arn" "$wallet_arn" \
+            --resource-arns "$credentials_arn" \
             --query 'EvaluationResults[?EvalDecision!=`allowed`].{Action:EvalActionName,Resource:EvalResourceName,Decision:EvalDecision}' \
             --output json)"
           if [[ "$decisions" != "[]" ]]; then
-            echo "::error::LabRole cannot read one or both Oracle secrets."
+            echo "::error::The ECS execution role cannot read the Oracle database credentials secret."
             echo "$decisions"
             exit 1
           fi
 
-          for key_arn in "$ORACLE_CREDENTIALS_KMS_KEY_ARN" "$ORACLE_WALLET_KMS_KEY_ARN"; do
+          for key_arn in "$ORACLE_CREDENTIALS_KMS_KEY_ARN"; do
             if [[ -z "$key_arn" ]]; then
               continue
             fi
@@ -131,19 +139,35 @@ jobs:
             fi
           done
 
-          pass_role_decision="$(aws iam simulate-principal-policy \
+          wallet_object_arn="arn:aws:s3:::$wallet_bucket/$wallet_key"
+          wallet_access="$(aws iam simulate-principal-policy \
+            --policy-source-arn "$task_role_arn" \
+            --action-names s3:GetObject \
+            --resource-arns "$wallet_object_arn" \
+            --query 'EvaluationResults[?EvalDecision!=`allowed`].{Action:EvalActionName,Resource:EvalResourceName,Decision:EvalDecision}' \
+            --output json)"
+          if [[ "$wallet_access" != "[]" ]]; then
+            echo "::error::LabRole does not have s3:GetObject access to the configured wallet object."
+            echo "$wallet_access"
+            exit 1
+          fi
+
+          pass_role_decisions="$(aws iam simulate-principal-policy \
             --policy-source-arn "arn:aws:iam::$AWS_ACCOUNT_ID:role/voclabs" \
             --action-names iam:PassRole --resource-arns "$EXECUTION_ROLE_ARN" \
             --context-entries ContextKeyName=iam:PassedToService,ContextKeyValues=ecs-tasks.amazonaws.com,ContextKeyType=string \
-            --query 'EvaluationResults[0].EvalDecision' --output text)"
-          if [[ "$pass_role_decision" != "allowed" ]]; then
-            echo "::error::The GitHub Actions credentials cannot pass LabRole to ECS tasks."
+            --query 'EvaluationResults[?EvalDecision!=`allowed`].{Resource:EvalResourceName,Decision:EvalDecision}' \
+            --output json)"
+          if [[ "$pass_role_decisions" != "[]" ]]; then
+            echo "::error::The GitHub Actions credentials cannot pass both ECS roles to ECS tasks."
+            echo "$pass_role_decisions"
             exit 1
           fi
 
           {
             echo "ORACLE_CREDENTIALS_SECRET_ARN=$credentials_arn"
-            echo "ORACLE_WALLET_SECRET_ARN=$wallet_arn"
+            echo "ORACLE_WALLET_S3_BUCKET=$wallet_bucket"
+            echo "ORACLE_WALLET_S3_KEY=$wallet_key"
           } >> "$GITHUB_ENV"
 
       - name: Verify infrastructure permissions
@@ -271,7 +295,8 @@ jobs:
             --arg image "$BACKEND_IMAGE" \
             --arg execution_role "$EXECUTION_ROLE_ARN" \
             --arg credentials_secret "$ORACLE_CREDENTIALS_SECRET_ARN" \
-            --arg wallet_secret "$ORACLE_WALLET_SECRET_ARN" \
+            --arg wallet_bucket "$ORACLE_WALLET_S3_BUCKET" \
+            --arg wallet_key "$ORACLE_WALLET_S3_KEY" \
             --arg nonce "$DEPLOYMENT_NONCE" \
             '[
               {ParameterKey:"ClusterName",ParameterValue:$cluster},
@@ -280,7 +305,8 @@ jobs:
               {ParameterKey:"BackendImage",ParameterValue:$image},
               {ParameterKey:"ExecutionRoleArn",ParameterValue:$execution_role},
               {ParameterKey:"OracleCredentialsSecretArn",ParameterValue:$credentials_secret},
-              {ParameterKey:"OracleWalletSecretArn",ParameterValue:$wallet_secret},
+              {ParameterKey:"WalletBucketName",ParameterValue:$wallet_bucket},
+              {ParameterKey:"WalletObjectKey",ParameterValue:$wallet_key},
               {ParameterKey:"DeploymentNonce",ParameterValue:$nonce}
             ]' > "$parameters_file"
 

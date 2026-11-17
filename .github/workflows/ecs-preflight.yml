@@ -14,9 +14,10 @@ jobs:
     env:
       AWS_REGION: us-east-1
       AWS_ACCOUNT_ID: "622519216316"
-      ECR_REPOSITORY: pet-app-angular21
+      ECR_REPOSITORY: pet-api-oracle
       ORACLE_CREDENTIALS_SECRET: pet-api/oracle-db-credentials
-      ORACLE_WALLET_SECRET: pet-api/oracle-wallet
+      ORACLE_WALLET_S3_BUCKET: ${{ vars.ORACLE_WALLET_S3_BUCKET }}
+      ORACLE_WALLET_S3_KEY: ${{ vars.ORACLE_WALLET_S3_KEY }}
 
     steps:
       - name: Configure AWS credentials
@@ -70,10 +71,32 @@ jobs:
             --secret-id "$ORACLE_CREDENTIALS_SECRET" --region "$AWS_REGION" \
             --query '{Name:Name,ARN:ARN,KmsKeyId:KmsKeyId,LastChangedDate:LastChangedDate}' \
             --output json
-          check_read "Oracle wallet secret metadata" aws secretsmanager describe-secret \
-            --secret-id "$ORACLE_WALLET_SECRET" --region "$AWS_REGION" \
-            --query '{Name:Name,ARN:ARN,KmsKeyId:KmsKeyId,LastChangedDate:LastChangedDate}' \
-            --output json
+          if [[ -z "$ORACLE_WALLET_S3_BUCKET" || -z "$ORACLE_WALLET_S3_KEY" ]]; then
+            echo "::error::Set ORACLE_WALLET_S3_BUCKET and ORACLE_WALLET_S3_KEY in GitHub Actions Variables."
+            failed=1
+          else
+            check_read "Oracle wallet bucket location" aws s3api get-bucket-location \
+              --bucket "$ORACLE_WALLET_S3_BUCKET" --query LocationConstraint --output json
+            check_read "Oracle wallet object metadata only" aws s3api head-object \
+              --bucket "$ORACLE_WALLET_S3_BUCKET" --key "$ORACLE_WALLET_S3_KEY" \
+              --query '{ContentLength:ContentLength,LastModified:LastModified,ServerSideEncryption:ServerSideEncryption}' \
+              --output json
+          fi
+
+          check_read "LabRole ECS task trust policy" aws iam get-role \
+            --role-name LabRole \
+            --query 'Role.{Arn:Arn,Trust:AssumeRolePolicyDocument}' --output json
+          if [[ -n "$ORACLE_WALLET_S3_BUCKET" && -n "$ORACLE_WALLET_S3_KEY" ]]; then
+            wallet_object_arn="arn:aws:s3:::$ORACLE_WALLET_S3_BUCKET/$ORACLE_WALLET_S3_KEY"
+            check_read "LabRole wallet S3 permission simulation" aws iam simulate-principal-policy \
+              --policy-source-arn "arn:aws:iam::$AWS_ACCOUNT_ID:role/LabRole" \
+              --action-names s3:GetObject --resource-arns "$wallet_object_arn" \
+              --query 'EvaluationResults[].{Action:EvalActionName,Decision:EvalDecision,MissingContext:MissingContextValues}' \
+              --output json
+          fi
+
+          check_read "CloudTrail wallet data-event trail status" aws cloudtrail get-trail-status \
+            --name pet-api-wallet-access --region "$AWS_REGION" --output json
 
           check_read "LabRole trust policy" aws iam get-role \
             --role-name LabRole --query 'Role.{Arn:Arn,Trust:AssumeRolePolicyDocument}' \
@@ -100,7 +123,7 @@ jobs:
             --resource-arns '*' \
             --query 'EvaluationResults[].{Action:EvalActionName,Decision:EvalDecision,MissingContext:MissingContextValues}' \
             --output json
-          check_read "LabRole pass permission for ECS tasks" aws iam simulate-principal-policy \
+          check_read "ECS role pass permission" aws iam simulate-principal-policy \
             --policy-source-arn "arn:aws:iam::$AWS_ACCOUNT_ID:role/voclabs" \
             --action-names iam:PassRole \
             --resource-arns "arn:aws:iam::$AWS_ACCOUNT_ID:role/LabRole" \

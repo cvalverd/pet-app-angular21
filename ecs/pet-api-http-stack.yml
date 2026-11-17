@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   Pet API on Fargate behind a public HTTP load balancer for a temporary demo; Oracle
-  connection material is injected from Secrets Manager.
+  database credentials are injected from Secrets Manager and the wallet is downloaded from S3.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@v3
@@ -10,7 +10,7 @@ Metadata:
     must:
       - Public HTTP is demo-only; do not use real or sensitive data because traffic is unencrypted and the API has no authentication.
       - Keep ECS task ingress limited to the ALB security group.
-      - Inject DB credentials and wallet only from Secrets Manager; never place values in this template.
+      - Inject DB credentials from Secrets Manager and retrieve the private wallet object using the ECS task role.
       - Keep the Oracle wallet out of the container image and source repository.
     ref:
       - at: ../README.md
@@ -39,10 +39,14 @@ Parameters:
     Type: String
     AllowedPattern: '^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$'
     Description: Secret JSON containing DB_URL, DB_USERNAME, and DB_PASSWORD.
-  OracleWalletSecretArn:
+  WalletBucketName:
     Type: String
-    AllowedPattern: '^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$'
-    Description: Secret containing the Base64-encoded Oracle wallet ZIP.
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+    Description: Private S3 bucket containing the Oracle wallet ZIP.
+  WalletObjectKey:
+    Type: String
+    AllowedPattern: '^[A-Za-z0-9._/-]{1,1024}$'
+    Description: S3 object key for the Oracle wallet ZIP.
   DeploymentNonce:
     Type: String
     AllowedPattern: '^[A-Za-z0-9-]{1,64}$'
@@ -158,11 +162,11 @@ Resources:
     Type: AWS::ECS::TaskDefinition
     Metadata:
       com.aws.cloudformation.Context:
-        why: run the existing Java 21 API image on Fargate with least runtime access and Secrets Manager injection
+        why: run the Java 21 API image on Fargate with Secrets Manager credentials and S3 wallet access
         must:
-          - Do not set taskRoleArn; the API does not call AWS APIs.
-          - Keep the wallet and database credentials in Secrets Manager references only.
-          - Keep execution-role access limited to required ECR, Logs, and secret retrieval.
+          - Use the existing Academy LabRole for the task role; its permissions are managed outside this stack.
+          - Keep database credentials in Secrets Manager and do not inject the wallet as an environment variable.
+          - Keep execution-role access limited to required ECR, Logs, and database secret retrieval.
     Properties:
       NetworkMode: awsvpc
       RequiresCompatibilities:
@@ -173,6 +177,7 @@ Resources:
         CpuArchitecture: X86_64
         OperatingSystemFamily: LINUX
       ExecutionRoleArn: !Ref ExecutionRoleArn
+      TaskRoleArn: !Ref ExecutionRoleArn
       ContainerDefinitions:
         - Name: pet-api
           Image: !Ref BackendImage
@@ -180,6 +185,12 @@ Resources:
           Environment:
             - Name: TNS_ADMIN
               Value: /app/wallet
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: ORACLE_WALLET_S3_BUCKET
+              Value: !Ref WalletBucketName
+            - Name: ORACLE_WALLET_S3_KEY
+              Value: !Ref WalletObjectKey
             - Name: DEPLOYMENT_ID
               Value: !Ref DeploymentNonce
           Secrets:
@@ -189,8 +200,6 @@ Resources:
               ValueFrom: !Sub '${OracleCredentialsSecretArn}:DB_USERNAME::'
             - Name: DB_PASSWORD
               ValueFrom: !Sub '${OracleCredentialsSecretArn}:DB_PASSWORD::'
-            - Name: ORACLE_WALLET_BASE64
-              ValueFrom: !Ref OracleWalletSecretArn
           PortMappings:
             - ContainerPort: 8080
               Protocol: tcp

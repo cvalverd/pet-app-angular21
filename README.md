@@ -82,22 +82,28 @@ autenticación y cualquiera que conozca la URL podrá consultar y modificar masc
 1. En el repositorio `cvalverd/pet-api-oracle`, actualiza el Dockerfile/entrypoint y publica una
    imagen en ECR con el workflow **Publish backend container to Amazon ECR**.
 2. Verifica que `pet-api/oracle-db-credentials` sea un secreto JSON con las claves `DB_URL`,
-   `DB_USERNAME` y `DB_PASSWORD`, y que `pet-api/oracle-wallet` contenga el ZIP de la wallet
-   codificado en Base64. En **Settings → Secrets and variables → Actions → Variables**, configura
-   `ORACLE_CREDENTIALS_SECRET_ARN` y `ORACLE_WALLET_SECRET_ARN` con los ARN completos de esos
-   secretos (incluido el sufijo al final del ARN). El workflow ya no consulta `DescribeSecret` ni
-   lee los valores. Si un secreto usa una clave KMS administrada por el cliente, configura también
-   la variable `ORACLE_CREDENTIALS_KMS_KEY_ARN` o `ORACLE_WALLET_KMS_KEY_ARN` correspondiente; con
-   la clave administrada por AWS, déjalas vacías.
+   `DB_USERNAME` y `DB_PASSWORD`. La wallet se almacena como ZIP privado en el bucket
+   `pet-api-oracle-wallet-622519216316-us-east-1-an`, en la clave `Wallet_BTJOWHCMGWJBQTNV.zip`; no la guardes
+   en Secrets Manager ni en GitHub. En **Settings → Secrets and variables → Actions → Variables**,
+   configura `ORACLE_CREDENTIALS_SECRET_ARN`, `ORACLE_WALLET_S3_BUCKET` y `ORACLE_WALLET_S3_KEY`.
+   ECS utiliza el rol existente `LabRole` como execution role y task role; la confianza de ese rol
+   incluye ECS Tasks y la simulación IAM actual permite `s3:GetObject` sobre el objeto indicado.
+   `LabRole` es compartido y no aplica mínimo privilegio, por lo que este diseño es solo para AWS
+   Academy/demo. Si el secreto de credenciales usa una clave KMS administrada por el cliente, configura
+   `ORACLE_CREDENTIALS_KMS_KEY_ARN`; con la clave administrada por AWS, déjala vacía. El workflow
+   valida permisos por simulación sin leer el secreto ni el objeto wallet; comprueba el objeto usando
+   únicamente sus metadatos.
 3. Inicia el laboratorio AWS Academy y actualiza `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` y
    `AWS_SESSION_TOKEN` en los secretos de Actions de este repositorio y del backend.
-4. No se configura un trail de CloudTrail; habrá menos auditoría centralizada de las operaciones de
-   infraestructura.
+4. El trail `pet-api-wallet-access` registra eventos de datos del bucket de la wallet en el bucket
+   separado de auditoría. CloudTrail Data Events, las solicitudes/métricas S3 y el almacenamiento de
+   logs pueden generar cargos.
 5. Ejecuta **Deploy Pet API to ECS**. El workflow valida la plantilla, la cuenta, los permisos y la
    conectividad pública de la VPC antes de desplegar; después espera al servicio y hace una
    comprobación `GET /pets`.
 
-El puerto 80 del ALB queda accesible desde Internet y el tráfico entre el navegador y la API viaja
+El objeto `Wallet_BTJOWHCMGWJBQTNV.zip` ya está cargado. El puerto 80 del ALB queda accesible desde
+Internet y el tráfico entre el navegador y la API viaja
 sin cifrar. La health check del servicio depende de que Oracle acepte conexiones desde la red de
 AWS. El frontend no se conecta automáticamente a este endpoint: `apiUrl` sigue compilada como
 `http://localhost:8080/pets` hasta que se configure y publique una URL de API adecuada. Un sitio
