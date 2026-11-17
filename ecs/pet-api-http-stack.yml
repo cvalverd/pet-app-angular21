@@ -203,6 +203,7 @@ Resources:
 
   ApiService:
     Type: AWS::ECS::Service
+    DependsOn: ApiListener
     Metadata:
       com.aws.cloudformation.Context:
         why: keep one API task available behind the load balancer for temporary public demo access
