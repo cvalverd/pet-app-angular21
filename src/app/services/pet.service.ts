@@ -7,8 +7,7 @@ import { Pet } from '../models/pet';
   providedIn: 'root'
 })
 export class PetService {
-  //EndPoint del microservicio pet-api (C:\dev\pet-api-oracle), conectado a Oracle Cloud
-  private apiUrl = 'http://localhost:8080/pets';
+  private readonly apiUrl = '/pets';
 
   constructor(private http: HttpClient) { }
 
@@ -17,7 +16,7 @@ export class PetService {
   }
 
   getPetDetails(id: number): Observable<Pet> {
-    return this.http.get<Pet>(this.apiUrl + '/' + id);
+    return this.http.get<Pet>(`${this.apiUrl}/${id}`);
   }
 
 }
