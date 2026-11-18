@@ -1,5 +1,13 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Single EC2 demo host for the Angular frontend and Java API, managed through Systems Manager.
+Description: EC2 demo host and optional private Oracle wallet bucket, managed through Systems Manager.
+
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+  com.aws.cloudformation.Context:
+    ref:
+      - at: README.md
+        has: deployment and wallet lifecycle guidance
 
 Parameters:
   VpcId:
@@ -42,8 +50,9 @@ Parameters:
     Description: Secret JSON containing DB_URL, DB_USERNAME and DB_PASSWORD.
   OracleWalletBucketName:
     Type: String
-    AllowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
-    Description: Private S3 bucket that contains the Oracle wallet ZIP.
+    Default: ''
+    AllowedPattern: '^$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+    Description: Existing private wallet bucket name; leave empty to create a bucket.
   OracleWalletObjectKey:
     Type: String
     AllowedPattern: '^[A-Za-z0-9._/-]{1,1024}$'
@@ -51,8 +60,59 @@ Parameters:
 
 Conditions:
   CreateEc2Role: !Equals [!Ref CreateInstanceRole, 'true']
+  CreateWalletBucket: !Equals [!Ref OracleWalletBucketName, '']
 
 Resources:
+  OracleWalletBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateWalletBucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Isolate the wallet in a generated private bucket without placing it in the template.
+        must:
+          - Keep wallet objects private, encrypted and retained on stack deletion.
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+
+  OracleWalletBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateWalletBucket
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Require TLS when accessing the generated wallet bucket.
+        must:
+          - Deny non-TLS requests to the bucket and its objects.
+    Properties:
+      Bucket: !Ref OracleWalletBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt OracleWalletBucket.Arn
+              - !Sub '${OracleWalletBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
   PetAppSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -111,7 +171,9 @@ Resources:
                 Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource: !Sub arn:${AWS::Partition}:s3:::${OracleWalletBucketName}/${OracleWalletObjectKey}
+                Resource: !Sub
+                  - arn:${AWS::Partition}:s3:::${WalletBucket}/${OracleWalletObjectKey}
+                  - WalletBucket: !If [CreateWalletBucket, !Ref OracleWalletBucket, !Ref OracleWalletBucketName]
 
   PetAppInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -198,6 +260,12 @@ Outputs:
   WebsiteUrl:
     Description: Demo frontend URL; HTTP only and unauthenticated.
     Value: !Sub http://${PetAppInstance.PublicIp}/
+  WalletBucketName:
+    Description: Upload the Oracle wallet ZIP here and set ORACLE_WALLET_S3_BUCKET to this value.
+    Value: !If [CreateWalletBucket, !Ref OracleWalletBucket, !Ref OracleWalletBucketName]
+  WalletObjectKey:
+    Description: Set ORACLE_WALLET_S3_KEY to this value.
+    Value: !Ref OracleWalletObjectKey
   InstanceProfileName:
     Description: Instance profile used by the EC2 host.
     Value: !If

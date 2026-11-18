@@ -68,15 +68,20 @@ parte del repositorio frontend.
 #### Crear una instancia nueva
 
 La plantilla [ec2/pet-app-ec2-stack.yml](./ec2/pet-app-ec2-stack.yml) crea una instancia Amazon Linux
-2023, Security Group HTTP, almacenamiento EBS cifrado y Nginx; no abre SSH. El host debe quedar en una
-subred pública con salida a Internet y registrado como nodo administrado de SSM.
+2023, Security Group HTTP, almacenamiento EBS cifrado, Nginx y un bucket S3 privado para el wallet;
+no abre SSH. También permite usar un bucket existente. El host debe quedar en una subred pública
+con salida a Internet y registrado como nodo administrado de SSM.
 
 Antes de crearla, prepara fuera de la plantilla:
 
 - Una base Oracle Cloud Autonomous Database accesible desde Internet.
 - En AWS Secrets Manager, un secreto JSON con `DB_URL`, `DB_USERNAME` y `DB_PASSWORD`.
-- El ZIP del wallet en un bucket S3 privado.
+- El ZIP del wallet descargado de Oracle Cloud, para subirlo después de crear el stack.
 - Una VPC y una subred pública. La plantilla **no crea** la base Oracle, el secreto ni el wallet.
+
+El bucket nuevo bloquea el acceso público, cifra los objetos, exige HTTPS y conserva versiones.
+CloudFormation genera su nombre para evitar conflictos entre alumnos. Si ya tienes un bucket privado,
+puedes pasar su nombre como `OracleWalletBucketName`; debes encargarte de su seguridad y permisos.
 
 En AWS Academy, usa el instance profile existente `LabInstanceProfile` y
 `CreateInstanceRole=false`. En una cuenta AWS propia, puedes elegir `CreateInstanceRole=true` para que
@@ -90,7 +95,6 @@ Ejemplo PowerShell (reemplaza los identificadores por los de tu cuenta):
 $VpcId = "vpc-xxxxxxxx"
 $SubnetId = "subnet-xxxxxxxx"
 $SecretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:pet-api/oracle-db-credentials-xxxxxx"
-$WalletBucket = "mi-bucket-privado"
 $WalletKey = "Wallet.zip"
 
 aws cloudformation deploy `
@@ -102,11 +106,23 @@ aws cloudformation deploy `
     "VpcId=$VpcId" `
     "PublicSubnetId=$SubnetId" `
     "OracleCredentialsSecretArn=$SecretArn" `
-    "OracleWalletBucketName=$WalletBucket" `
     "OracleWalletObjectKey=$WalletKey" `
     "CreateInstanceRole=false" `
     "ExistingInstanceProfileName=LabInstanceProfile"
 ```
+
+Después de crear el stack, recupera el nombre generado y sube el wallet **sin descomprimir**:
+
+```powershell
+$WalletBucket = aws cloudformation describe-stacks --stack-name pet-app-ec2-demo --region us-east-1 --query "Stacks[0].Outputs[?OutputKey=='WalletBucketName'].OutputValue | [0]" --output text
+$WalletKey = aws cloudformation describe-stacks --stack-name pet-app-ec2-demo --region us-east-1 --query "Stacks[0].Outputs[?OutputKey=='WalletObjectKey'].OutputValue | [0]" --output text
+aws s3 cp "C:\ruta\al\wallet.zip" "s3://$WalletBucket/$WalletKey" --region us-east-1
+```
+
+Sustituye la ruta local por el ZIP que descargaste. La identidad que ejecuta estos comandos necesita
+permisos para crear el bucket y cargar el objeto; el perfil de EC2 necesita permiso para leerlo.
+Configura `ORACLE_WALLET_S3_BUCKET` y `ORACLE_WALLET_S3_KEY` en el repositorio backend con los valores
+de estos outputs antes de ejecutar su workflow.
 
 Si necesitas descubrir la VPC/subred por defecto:
 
@@ -124,7 +140,10 @@ ejercicio, elimina el stack si ya no necesitas la instancia:
 aws cloudformation delete-stack --stack-name pet-app-ec2-demo --region us-east-1
 ```
 
-La eliminación no borra la base Oracle, el secreto ni el bucket/objeto del wallet.
+La eliminación no borra la base Oracle, el secreto ni el bucket/objeto del wallet. El bucket creado
+por el stack se **retiene** con sus versiones, pero su política de HTTPS administrada por el stack se
+elimina; si lo conservas, restaura esa política. Elimina manualmente el bucket y todas sus versiones
+cuando ya no los necesites. S3 puede generar cargos por almacenamiento y solicitudes.
 
 #### Configurar GitHub Actions en ambos repositorios
 
