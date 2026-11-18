@@ -6,9 +6,12 @@ Al finalizar tendrás tus propios repositorios en GitHub y una instancia EC2 con
 la API Spring Boot y una conexión a Oracle Autonomous Database. GitHub Actions construirá las imágenes,
 las guardará en ECR y actualizará los contenedores al hacer push a `main`.
 
-**Importante:** la aplicación de demostración funciona en EC2, pero la plantilla para crear una
-instancia nueva todavía no se ha probado en un despliegue completo desde cero. Si algún paso falla,
-revisa los eventos y registros indicados al final; no asumas que `CREATE_COMPLETE` prueba la aplicación.
+**Estado del ensayo:** se creó un stack nuevo con esta plantilla en AWS Academy y se desplegaron los
+dos componentes con los scripts publicados; la web y `/pets` respondieron correctamente. La prueba
+reutilizó imágenes ECR, un secreto y una base Oracle existentes, y copió el wallet entre buckets.
+No se ensayó la creación de forks, secretos o repositorios ECR nuevos, ni el CRUD en un esquema
+independiente. Si algún paso falla, revisa los eventos y registros indicados al final; no asumas que
+`CREATE_COMPLETE` prueba la aplicación.
 
 La demo usa HTTP público y no tiene autenticación. Usa únicamente datos de prueba. AWS y Oracle pueden
 generar cargos: consulta los límites de tu laboratorio y [precios de AWS](https://aws.amazon.com/pricing/).
