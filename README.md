@@ -48,6 +48,8 @@ contenedores.
 
 ### Despliegue reproducible en EC2
 
+Para la actividad de clase, sigue el [manual paso a paso](./MANUAL-CLASE.md).
+
 El workflow `.github/workflows/publish-ecr.yml` construye la imagen Angular, la publica en ECR con
 el SHA del commit como etiqueta inmutable y, al ejecutarse desde `main`, actualiza el contenedor
 `pet-frontend` de EC2 mediante AWS Systems Manager (SSM). El despliegue conserva el contenedor
