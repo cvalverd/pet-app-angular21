@@ -40,4 +40,41 @@ describe('PetService', () => {
     request.flush(pet);
     expect(response).toEqual(pet);
   });
+
+  it('creates a pet using the API contract', () => {
+    const pet = { name: 'Nina', breed: 'Poodle', age: 4 };
+    let response: unknown;
+
+    service.createPet(pet).subscribe(value => response = value);
+
+    const request = httpTestingController.expectOne('/pets');
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toEqual(pet);
+    request.flush({ id: 8, ...pet });
+    expect(response).toEqual({ id: 8, ...pet });
+  });
+
+  it('updates a pet using its API resource path', () => {
+    const pet = { name: 'Nina', breed: 'Poodle', age: 5 };
+    let response: unknown;
+
+    service.updatePet(8, pet).subscribe(value => response = value);
+
+    const request = httpTestingController.expectOne('/pets/8');
+    expect(request.request.method).toBe('PUT');
+    expect(request.request.body).toEqual(pet);
+    request.flush({ id: 8, ...pet });
+    expect(response).toEqual({ id: 8, ...pet });
+  });
+
+  it('deletes a pet using its API resource path', () => {
+    let completed = false;
+
+    service.deletePet(8).subscribe(() => completed = true);
+
+    const request = httpTestingController.expectOne('/pets/8');
+    expect(request.request.method).toBe('DELETE');
+    request.flush(null);
+    expect(completed).toBe(true);
+  });
 });

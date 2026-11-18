@@ -1,8 +1,42 @@
-<h2>Detalles de la Mascota</h2>
-@if (pet(); as pet) {
-  <div>
-    <h3>{{ pet.name }}</h3>
-    <p>Raza: {{ pet.breed }}</p>
-    <p>Edad: {{ pet.age }}</p>
-  </div>
-}
+<section class="details-page" aria-labelledby="details-title">
+  <a class="back-link" routerLink="/list"><span aria-hidden="true">←</span> Volver a mis mascotas</a>
+
+  @if (loading()) {
+    <div class="detail-message" role="status"><span class="spinner" aria-hidden="true"></span> Cargando perfil…</div>
+  } @else if (error()) {
+    <div class="detail-error" role="alert">
+      <span class="error-mark" aria-hidden="true">!</span>
+      <h2>No pudimos abrir este perfil</h2>
+      <p>{{ error() }}</p>
+      <a class="primary-button" routerLink="/list">Volver a la lista</a>
+    </div>
+  } @else if (pet(); as pet) {
+    <article class="profile-card">
+      <div class="profile-cover">
+        <span class="cover-orbit orbit-one"></span>
+        <span class="cover-orbit orbit-two"></span>
+        <span class="profile-avatar" aria-hidden="true">{{ pet.name.charAt(0).toLocaleUpperCase() }}</span>
+        <span class="profile-spark" aria-hidden="true">✦</span>
+      </div>
+      <div class="profile-content">
+        <span class="section-kicker">PERFIL DE MASCOTA</span>
+        <h1 id="details-title">{{ pet.name }}</h1>
+        <p class="profile-subtitle">Un compañero único en tu familia.</p>
+        <div class="profile-facts">
+          <div class="fact">
+            <span class="fact-icon breed-icon" aria-hidden="true">✧</span>
+            <div><small>RAZA</small><strong>{{ pet.breed }}</strong></div>
+          </div>
+          <div class="fact">
+            <span class="fact-icon age-icon" aria-hidden="true">♡</span>
+            <div><small>EDAD</small><strong>{{ pet.age }} {{ pet.age === 1 ? 'año' : 'años' }}</strong></div>
+          </div>
+        </div>
+        <div class="profile-footer">
+          <span><span class="status-dot"></span> Siempre parte de la familia</span>
+          <a class="primary-button" routerLink="/list">Gestionar mascotas</a>
+        </div>
+      </div>
+    </article>
+  }
+</section>

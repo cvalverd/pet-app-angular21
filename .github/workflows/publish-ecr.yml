@@ -1,4 +1,4 @@
-name: Publish container to Amazon ECR
+name: Publish and deploy frontend to EC2
 
 on:
   workflow_dispatch:
@@ -20,9 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      AWS_REGION: us-east-1
-      AWS_ACCOUNT_ID: "622519216316"
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      EXPECTED_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       ECR_REPOSITORY: pet-app-angular21
+
+    outputs:
+      image: ${{ steps.image-reference.outputs.image }}
 
     steps:
       - name: Check out source
@@ -40,8 +43,12 @@ jobs:
         shell: bash
         run: |
           account_id="$(aws sts get-caller-identity --query Account --output text)"
-          if [[ "$account_id" != "$AWS_ACCOUNT_ID" ]]; then
-            echo "::error::The configured AWS credentials point to account $account_id, not $AWS_ACCOUNT_ID."
+          if [[ ! "$account_id" =~ ^[0-9]{12}$ ]]; then
+            echo "::error::Could not determine the AWS account ID."
+            exit 1
+          fi
+          if [[ -n "$EXPECTED_AWS_ACCOUNT_ID" && "$account_id" != "$EXPECTED_AWS_ACCOUNT_ID" ]]; then
+            echo "::error::The configured AWS credentials point to account $account_id, not $EXPECTED_AWS_ACCOUNT_ID."
             exit 1
           fi
 
@@ -66,10 +73,29 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Check whether the immutable image already exists
+        id: existing-image
+        shell: bash
+        run: |
+          if image="$(aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids "imageTag=$GITHUB_SHA" \
+            --region "$AWS_REGION" 2>&1)"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Image for this commit already exists; it will be reused."
+          elif [[ "$image" == *"ImageNotFoundException"* ]]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$image" >&2
+            exit 1
+          fi
+
       - name: Set up Docker Buildx
+        if: steps.existing-image.outputs.exists != 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push image
+        if: steps.existing-image.outputs.exists != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -78,3 +104,48 @@ jobs:
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Export image reference
+        id: image-reference
+        shell: bash
+        run: |
+          echo "image=${{ steps.login-ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+  deploy-ec2:
+    name: Deploy frontend to EC2 through Systems Manager
+    needs: publish
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+      IMAGE_URI: ${{ needs.publish.outputs.image }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify deployment target
+        shell: bash
+        run: |
+          if [[ ! "$EC2_INSTANCE_ID" =~ ^i-[0-9a-f]{8,17}$ ]]; then
+            echo "::error::Set the EC2_INSTANCE_ID Actions variable to the managed EC2 instance ID."
+            exit 1
+          fi
+          if [[ -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" || -z "$AWS_SESSION_TOKEN" ]]; then
+            echo "::error::Configure all three temporary AWS Academy repository secrets."
+            exit 1
+          fi
+
+      - name: Deploy image and smoke-test the EC2 website
+        shell: bash
+        run: bash ec2/deploy-to-instance.sh "$EC2_INSTANCE_ID" "$AWS_REGION" frontend ec2/deploy-frontend.sh "$IMAGE_URI" "$AWS_REGION"

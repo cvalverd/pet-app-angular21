@@ -4,7 +4,7 @@ import { PetDetailsComponent } from './components/pet-details/pet-details.compon
 
 export const routes: Routes = [
   { path: 'list', component: PetListComponent },
-  { path: 'pet', component: PetDetailsComponent },
-  //con este path se indica cual es la primera pagina que se debe iniciar junto con la app
+  { path: 'pet/:id', component: PetDetailsComponent },
+  { path: 'pet', redirectTo: 'list' },
   { path: '', redirectTo: 'list', pathMatch: 'full' }
 ];

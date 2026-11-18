@@ -1,0 +1,286 @@
+:host {
+  display: block;
+  min-height: 100vh;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 2;
+  display: flex;
+  width: 252px;
+  flex-direction: column;
+  padding: 31px 20px 22px;
+  background: #183b35;
+  color: #fff;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.brand-mark {
+  display: grid;
+  width: 43px;
+  height: 43px;
+  place-items: center;
+  border-radius: 14px;
+  background: #d7eddd;
+  color: #23564b;
+}
+
+.brand-mark svg {
+  width: 26px;
+  height: 26px;
+}
+
+.brand-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.brand-copy strong {
+  font-family: var(--font-display);
+  font-size: 21px;
+  letter-spacing: -.5px;
+}
+
+.brand-copy small {
+  color: #b6ccc3;
+  font-size: 10px;
+  letter-spacing: .04em;
+}
+
+.sidebar-label {
+  margin: 53px 0 11px 12px;
+  color: #95b0a5;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .14em;
+}
+
+.main-nav a {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-height: 48px;
+  padding: 0 13px;
+  border-radius: 12px;
+  color: #d8e6e0;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background .2s ease, color .2s ease;
+}
+
+.main-nav a:hover,
+.main-nav a.active {
+  background: #2b554a;
+  color: #fff;
+}
+
+.main-nav svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+}
+
+.sidebar-note {
+  margin-top: auto;
+  padding: 17px 16px;
+  border: 1px solid rgba(220, 239, 227, .13);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, .055);
+}
+
+.note-icon {
+  display: grid;
+  width: 27px;
+  height: 27px;
+  margin-bottom: 12px;
+  place-items: center;
+  border-radius: 9px;
+  background: #d5ead9;
+  color: #28584c;
+}
+
+.sidebar-note strong {
+  font-family: var(--font-display);
+  font-size: 15px;
+}
+
+.sidebar-note p {
+  margin: 6px 0 0;
+  color: #bad0c6;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 21px;
+  padding-left: 3px;
+  color: #b7ccc2;
+  font-size: 11px;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #91d19c;
+  box-shadow: 0 0 0 3px rgba(145, 209, 156, .14);
+}
+
+.main-area {
+  min-height: 100vh;
+  margin-left: 252px;
+  padding: 0 54px;
+}
+
+.topbar {
+  display: flex;
+  min-height: 133px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #e8ebe6;
+}
+
+.eyebrow {
+  color: #8a968e;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .16em;
+}
+
+.topbar h1 {
+  margin: 5px 0 0;
+  color: #203b33;
+  font-family: var(--font-display);
+  font-size: clamp(24px, 2.6vw, 32px);
+  font-weight: 600;
+  letter-spacing: -.7px;
+}
+
+.topbar-action {
+  display: inline-flex;
+  min-height: 43px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  border-radius: 10px;
+  background: #23564b;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+  transition: background .2s ease, transform .2s ease;
+}
+
+.topbar-action:hover {
+  transform: translateY(-1px);
+  background: #19493e;
+}
+
+.topbar-action span {
+  font-size: 19px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.page-content {
+  max-width: 1200px;
+  min-height: calc(100vh - 190px);
+  margin: 0 auto;
+  padding: 33px 0 42px;
+}
+
+.page-footer {
+  padding: 18px 0 23px;
+  border-top: 1px solid #e8ebe6;
+  color: #98a19b;
+  font-size: 11px;
+  text-align: center;
+}
+
+.page-footer span {
+  color: #dc8c76;
+}
+
+@media (max-width: 900px) {
+  .sidebar {
+    width: 205px;
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .main-area {
+    margin-left: 205px;
+    padding: 0 30px;
+  }
+}
+
+@media (max-width: 640px) {
+  .sidebar {
+    position: static;
+    width: auto;
+    min-height: 0;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding: 13px 18px;
+  }
+
+  .brand-mark {
+    width: 38px;
+    height: 38px;
+  }
+
+  .sidebar-label,
+  .sidebar-note,
+  .sidebar-footer {
+    display: none;
+  }
+
+  .main-nav a {
+    min-height: 40px;
+    padding: 0 10px;
+  }
+
+  .main-nav a span {
+    display: none;
+  }
+
+  .main-area {
+    margin-left: 0;
+    padding: 0 18px;
+  }
+
+  .topbar {
+    min-height: 110px;
+    gap: 12px;
+  }
+
+  .topbar-action {
+    min-height: 39px;
+    padding: 0 11px;
+    font-size: 11px;
+  }
+
+  .page-content {
+    min-height: calc(100vh - 190px);
+    padding-top: 24px;
+  }
+}

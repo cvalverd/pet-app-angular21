@@ -42,3 +42,6 @@ __screenshots__/
 # System files
 .DS_Store
 Thumbs.db
+
+# Local clone of the backend repository; it has its own Git history.
+/.backend-worktree-temp/

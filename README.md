@@ -41,73 +41,150 @@ npm start          # http://localhost:4200
 ```
 
 El backend es el microservicio **pet-api** (`C:\dev\pet-api-oracle`, Spring Boot + Oracle Cloud).
-`apiUrl` en `src/app/services/pet.service.ts` apunta a `http://localhost:8080/pets`; si la API se
-despliega en otro lugar (por ejemplo una EC2), cambia esa URL y agrega el origen del frontend en
-`CORS_ORIGINS` del microservicio.
+El frontend consume `/pets` en el mismo origen. `npm start` usa `proxy.conf.json` para reenviar esa
+ruta a `http://localhost:8080`; en la nube, configura el proxy web para reenviar `/pets` al contenedor
+del backend. Este esquema evita depender del `localhost` del navegador y no requiere CORS entre
+contenedores.
 
-### Publicar la imagen en Amazon ECR con AWS Academy
+### Despliegue reproducible en EC2
 
-El workflow `.github/workflows/publish-ecr.yml` construye la imagen Docker y la publica en ECR con
-el SHA del commit como tag en un runner alojado por GitHub. No requiere Docker, AWS CLI ni un runner
-en tu PC; usa credenciales temporales de AWS Academy almacenadas como GitHub Actions Secrets.
+El workflow `.github/workflows/publish-ecr.yml` construye la imagen Angular, la publica en ECR con
+el SHA del commit como etiqueta inmutable y, al ejecutarse desde `main`, actualiza el contenedor
+`pet-frontend` de EC2 mediante AWS Systems Manager (SSM). El despliegue conserva el contenedor
+anterior hasta que el nuevo responde correctamente y hace rollback si falla. Repetir un workflow
+para el mismo commit reutiliza la imagen existente.
 
-Requisitos:
+Para obtener ambos proyectos en una carpeta de trabajo:
 
-1. Inicia el laboratorio AWS Academy y agrega estos secretos del repositorio en **Settings →
-   Secrets and variables → Actions → New repository secret**:
-   - `AWS_ACCESS_KEY_ID`
-   - `AWS_SECRET_ACCESS_KEY`
-   - `AWS_SESSION_TOKEN`
-2. Usa los valores temporales de la sesión Academy activa. Cuando roten o venzan, actualiza los tres
-   secretos antes de volver a ejecutar el workflow.
-3. Las credenciales deben permitir crear el repositorio ECR `pet-app-angular21` si aún no existe,
-   describirlo, autenticarse en ECR y subir imágenes. El workflow lo crea con tags inmutables y
-   cifrado AES256 cuando es necesario.
-4. Ejecuta **Publish container to Amazon ECR** desde la pestaña **Actions**, o actualiza la rama
-   `main` mientras los secretos contienen credenciales vigentes.
+```powershell
+git clone https://github.com/cvalverd/pet-app-angular21.git
+git clone https://github.com/cvalverd/pet-api-oracle.git
+```
 
-No pegues credenciales AWS en el código ni en el chat. Las credenciales vencidas o una política que
-deniegue ECR harán fallar el workflow. Este workflow solo publica la imagen en ECR, no crea ni
-actualiza recursos ECS. La aplicación actualmente fija la API en `http://localhost:8080/pets`, por
-lo que las llamadas a la API no funcionarán para visitantes hasta configurar la URL del backend.
+Configura y despliega cada repositorio por separado; el clon local del backend que pueda aparecer
+como `.backend-worktree-temp` en el equipo del instructor es solo una copia de trabajo y no forma
+parte del repositorio frontend.
 
-### Desplegar la API Java en ECS por HTTP (solo demo)
+#### Crear una instancia nueva
 
-El workflow manual **Deploy Pet API to ECS** publica la API `pet-api-oracle` como un servicio
-Fargate detrás de un Application Load Balancer público. El acceso será por HTTP, sin cifrado TLS,
-porque el rol actual de AWS Academy no permite las acciones de CloudFront y no hay un certificado
-ACM configurado. **Es solo para una demo: no uses datos reales o sensibles.** La API no tiene
-autenticación y cualquiera que conozca la URL podrá consultar y modificar mascotas.
+La plantilla [ec2/pet-app-ec2-stack.yml](./ec2/pet-app-ec2-stack.yml) crea una instancia Amazon Linux
+2023, Security Group HTTP, almacenamiento EBS cifrado y Nginx; no abre SSH. El host debe quedar en una
+subred pública con salida a Internet y registrado como nodo administrado de SSM.
 
-1. En el repositorio `cvalverd/pet-api-oracle`, actualiza el Dockerfile/entrypoint y publica una
-   imagen en ECR con el workflow **Publish backend container to Amazon ECR**.
-2. Verifica que `pet-api/oracle-db-credentials` sea un secreto JSON con las claves `DB_URL`,
-   `DB_USERNAME` y `DB_PASSWORD`. La wallet se almacena como ZIP privado en el bucket
-   `pet-api-oracle-wallet-622519216316-us-east-1-an`, en la clave `Wallet_BTJOWHCMGWJBQTNV.zip`; no la guardes
-   en Secrets Manager ni en GitHub. En **Settings → Secrets and variables → Actions → Variables**,
-   configura `ORACLE_CREDENTIALS_SECRET_ARN`, `ORACLE_WALLET_S3_BUCKET` y `ORACLE_WALLET_S3_KEY`.
-   ECS utiliza el rol existente `LabRole` como execution role y task role; la confianza de ese rol
-   incluye ECS Tasks y la simulación IAM actual permite `s3:GetObject` sobre el objeto indicado.
-   `LabRole` es compartido y no aplica mínimo privilegio, por lo que este diseño es solo para AWS
-   Academy/demo. Si el secreto de credenciales usa una clave KMS administrada por el cliente, configura
-   `ORACLE_CREDENTIALS_KMS_KEY_ARN`; con la clave administrada por AWS, déjala vacía. El workflow
-   valida permisos por simulación sin leer el secreto ni el objeto wallet; comprueba el objeto usando
-   únicamente sus metadatos.
-3. Inicia el laboratorio AWS Academy y actualiza `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` y
-   `AWS_SESSION_TOKEN` en los secretos de Actions de este repositorio y del backend.
-4. El trail `pet-api-wallet-access` registra eventos de datos del bucket de la wallet en el bucket
-   separado de auditoría. CloudTrail Data Events, las solicitudes/métricas S3 y el almacenamiento de
-   logs pueden generar cargos.
-5. Ejecuta **Deploy Pet API to ECS**. El workflow valida la plantilla, la cuenta, los permisos y la
-   conectividad pública de la VPC antes de desplegar; después espera al servicio y hace una
-   comprobación `GET /pets`.
+Antes de crearla, prepara fuera de la plantilla:
 
-El objeto `Wallet_BTJOWHCMGWJBQTNV.zip` ya está cargado. El puerto 80 del ALB queda accesible desde
-Internet y el tráfico entre el navegador y la API viaja
-sin cifrar. La health check del servicio depende de que Oracle acepte conexiones desde la red de
-AWS. El frontend no se conecta automáticamente a este endpoint: `apiUrl` sigue compilada como
-`http://localhost:8080/pets` hasta que se configure y publique una URL de API adecuada. Un sitio
-frontend servido por HTTPS puede además bloquear llamadas a esta API HTTP por contenido mixto.
+- Una base Oracle Cloud Autonomous Database accesible desde Internet.
+- En AWS Secrets Manager, un secreto JSON con `DB_URL`, `DB_USERNAME` y `DB_PASSWORD`.
+- El ZIP del wallet en un bucket S3 privado.
+- Una VPC y una subred pública. La plantilla **no crea** la base Oracle, el secreto ni el wallet.
+
+En AWS Academy, usa el instance profile existente `LabInstanceProfile` y
+`CreateInstanceRole=false`. En una cuenta AWS propia, puedes elegir `CreateInstanceRole=true` para que
+la plantilla cree un rol mínimo con SSM, lectura de las imágenes ECR, el secreto indicado y el objeto
+wallet; en ese caso se requiere `CAPABILITY_IAM` y permiso para crear roles. El perfil existente
+también debe tener esos permisos. No pegues valores de credenciales en la línea de comandos.
+
+Ejemplo PowerShell (reemplaza los identificadores por los de tu cuenta):
+
+```powershell
+$VpcId = "vpc-xxxxxxxx"
+$SubnetId = "subnet-xxxxxxxx"
+$SecretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:pet-api/oracle-db-credentials-xxxxxx"
+$WalletBucket = "mi-bucket-privado"
+$WalletKey = "Wallet.zip"
+
+aws cloudformation deploy `
+  --template-file .\ec2\pet-app-ec2-stack.yml `
+  --stack-name pet-app-ec2-demo `
+  --region us-east-1 `
+  --capabilities CAPABILITY_IAM `
+  --parameter-overrides `
+    "VpcId=$VpcId" `
+    "PublicSubnetId=$SubnetId" `
+    "OracleCredentialsSecretArn=$SecretArn" `
+    "OracleWalletBucketName=$WalletBucket" `
+    "OracleWalletObjectKey=$WalletKey" `
+    "CreateInstanceRole=false" `
+    "ExistingInstanceProfileName=LabInstanceProfile"
+```
+
+Si necesitas descubrir la VPC/subred por defecto:
+
+```powershell
+$VpcId = aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query "Vpcs[0].VpcId" --output text
+$SubnetId = aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VpcId" "Name=default-for-az,Values=true" --query "Subnets[0].SubnetId" --output text
+```
+
+Consulta los outputs `InstanceId` y `WebsiteUrl` del stack y comprueba que la instancia esté `Online`
+en Systems Manager antes de ejecutar los workflows. Esta plantilla crea una **instancia nueva**; no
+importa ni modifica la EC2 de la demo que ya existe. Puede generar cargos de EC2/EBS. Al terminar el
+ejercicio, elimina el stack si ya no necesitas la instancia:
+
+```powershell
+aws cloudformation delete-stack --stack-name pet-app-ec2-demo --region us-east-1
+```
+
+La eliminación no borra la base Oracle, el secreto ni el bucket/objeto del wallet.
+
+#### Configurar GitHub Actions en ambos repositorios
+
+Los secretos y variables de Actions son independientes en cada repositorio. En ambos, entra a
+**Settings → Secrets and variables → Actions** y configura:
+
+**Secrets** (los tres son necesarios y AWS Academy los hace expirar):
+
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_SESSION_TOKEN`
+
+**Variables**:
+
+- `EC2_INSTANCE_ID`: output `InstanceId` de CloudFormation.
+- `AWS_REGION`: región del stack, por ejemplo `us-east-1` (opcional; ese es el valor predeterminado).
+- `AWS_ACCOUNT_ID`: opcional; si se configura, el workflow frontend verifica que las credenciales
+  apunten a esa cuenta.
+
+En el repositorio backend agrega además las variables `ORACLE_CREDENTIALS_SECRET_ARN`,
+`ORACLE_WALLET_S3_BUCKET` y `ORACLE_WALLET_S3_KEY`. No guardes los valores del secreto de Oracle en
+GitHub; el workflow los obtiene desde Secrets Manager dentro de EC2.
+
+Las credenciales que usa GitHub Actions necesitan acceso a ECR (describir/crear repositorio, login y
+subir imagen), `ssm:SendCommand` y `ssm:GetCommandInvocation` sobre la instancia y el documento
+`AWS-RunShellScript`, además de `ec2:DescribeInstances`. El rol de la instancia necesita leer las
+imágenes, el secreto y el wallet. El workflow usa solo el `main` para actualizar EC2; ejecutarlo
+manualmente desde otra rama no despliega.
+
+Para un stack nuevo, despliega primero el backend y después el frontend desde `main`. El workflow de
+cada repositorio publica (o reutiliza) la imagen y valida el endpoint del componente; el backend
+además ejecuta las pruebas Maven y la imagen Angular compila la aplicación. Al terminar, revisa
+`WebsiteUrl` y `http://<IP-publica>/pets`.
+
+No pegues credenciales AWS en el código o en el chat. Un `git clone` por sí solo no configura AWS ni
+GitHub Actions: cada estudiante necesita acceso de escritura al repositorio donde empujará cambios,
+su cuenta/recursos y sus propios secretos y variables.
+
+### Arquitectura EC2 de la demo activa
+
+La instancia EC2 ejecuta el frontend Angular en Docker (puerto 4000), la API Java (puerto 8080) y
+Nginx como proxy en el puerto 80. Los puertos de los contenedores quedan ligados a `127.0.0.1`;
+Nginx envía `/pets` a la API y el resto de rutas al frontend. Se administra por AWS Systems Manager
+(SSM), sin SSH público.
+
+La API se conecta a Oracle Cloud Autonomous Database con `DB_URL`, `DB_USERNAME` y `DB_PASSWORD`,
+almacenados en Secrets Manager. Descarga el wallet ZIP privado del bucket
+`pet-api-oracle-wallet-622519216316-us-east-1-an` (clave `Wallet_BTJOWHCMGWJBQTNV.zip`) usando el
+perfil de instancia; no guardes credenciales ni wallet en Git o dentro de la imagen. El esquema
+existente se adopta con Flyway y la migración V3 crea `PET` solo si falta y agrega únicamente las
+mascotas demo ausentes, sin borrar ni reemplazar registros.
+
+Al hacer push a `main`, los workflows de ambos repositorios despliegan sus respectivas imágenes en
+EC2. El despliegue de ECS es separado y no actualiza esta instancia; **no ejecutes Deploy Pet API to
+ECS para actualizar EC2**. La instancia activa se creó antes de agregar la plantilla CloudFormation
+de ejemplo.
+
+**Es solo para una demo:** el sitio/API usan HTTP sin TLS y no tienen autenticación. No uses datos
+reales o sensibles. La exposición pública se limita al puerto 80 del proxy; no publiques directamente
+los puertos 4000 ni 8080.
 
 ## Docker
 
@@ -117,6 +194,6 @@ docker run -p 4000:4000 pet-app
 ```
 
 Abre `http://localhost:4000`. La imagen compila la app y la sirve con el servidor de Angular (Express)
-en el puerto 4000. La URL de la API (`apiUrl` en `pet.service.ts`) queda fija al compilar: si la API
-no corre en `http://localhost:8080`, cámbiala antes de construir la imagen y agrega el origen del
-frontend (por ejemplo `http://localhost:4000`) en `CORS_ORIGINS` del microservicio.
+en el puerto 4000. Al ejecutarla detrás de un proxy inverso, configura el proxy para enviar `/pets`
+al backend y el resto de rutas al frontend. Para desarrollo local, `npm start` ya aplica el proxy
+definido en `proxy.conf.json`.

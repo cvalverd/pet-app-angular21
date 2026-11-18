@@ -1,10 +1,136 @@
-<h2>Lista de Mascotas</h2>
-<ul>
-  @for (pet of pets(); track pet.id) {
-    <li (click)="onPetSelected(pet)">
-      {{ pet.name }} ({{ pet.breed }})
-    </li>
-  } @empty {
-    <p>No hay datos disponibles.</p>
+<section class="pets-page" aria-labelledby="page-title">
+  <div class="page-intro">
+    <div>
+      <div class="section-kicker"><span class="kicker-spark">✦</span> CONOCE A TU FAMILIA</div>
+      <h2 id="page-title">Todas tus mascotas</h2>
+      <p class="intro-copy">Un lugar especial para cada compañero de aventuras.</p>
+    </div>
+    <div class="pet-count" aria-live="polite">
+      <span class="count-number">{{ pets().length }}</span>
+      <span>{{ pets().length === 1 ? 'mascota' : 'mascotas' }}<br>en tu familia</span>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <label class="search-box">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.2 4.2"/></svg>
+      <span class="sr-only">Buscar por nombre o raza</span>
+      <input type="search" [ngModel]="search()" (ngModelChange)="search.set($event)" placeholder="Buscar por nombre o raza..." autocomplete="off">
+    </label>
+    <button class="primary-button" type="button" (click)="openCreateForm()">
+      <span aria-hidden="true">＋</span> Nueva mascota
+    </button>
+  </div>
+
+  @if (error()) {
+    <div class="alert" role="alert">
+      <span class="alert-icon" aria-hidden="true">!</span>
+      <span>{{ error() }}</span>
+      @if (!isFormOpen() && !loading() && !loadFailed()) {
+        <button type="button" class="alert-action" (click)="loadPets()">Reintentar</button>
+      }
+    </div>
   }
-</ul>
+
+  @if (isFormOpen()) {
+    <section class="form-panel" id="pet-form" aria-labelledby="form-title">
+      <div class="form-heading">
+        <div>
+          <span class="section-kicker">{{ editingId() === null ? 'NUEVO INTEGRANTE' : 'ACTUALIZAR PERFIL' }}</span>
+          <h3 id="form-title">{{ editingId() === null ? 'Agregar una mascota' : 'Editar mascota' }}</h3>
+        </div>
+        <button class="icon-button close-button" type="button" aria-label="Cerrar formulario" (click)="closeForm()">×</button>
+      </div>
+      <form #petForm="ngForm" (ngSubmit)="savePet()">
+        <div class="form-fields">
+          <label class="field">
+            <span>Nombre</span>
+            <input name="name" [(ngModel)]="draft.name" required minlength="2" maxlength="50" placeholder="Ej. Luna" autocomplete="off">
+            @if (petForm.submitted && petForm.controls['name']?.invalid) {
+              <small class="field-error">Ingresa un nombre de 2 a 50 caracteres.</small>
+            }
+          </label>
+          <label class="field">
+            <span>Raza</span>
+            <input name="breed" [(ngModel)]="draft.breed" required maxlength="50" placeholder="Ej. Golden retriever" autocomplete="off">
+            @if (petForm.submitted && petForm.controls['breed']?.invalid) {
+              <small class="field-error">Ingresa una raza de hasta 50 caracteres.</small>
+            }
+          </label>
+          <label class="field age-field">
+            <span>Edad <small>(años)</small></span>
+            <input name="age" [(ngModel)]="draft.age" type="number" required min="0" max="40" step="1" inputmode="numeric">
+            @if (petForm.submitted && petForm.controls['age']?.invalid) {
+              <small class="field-error">La edad debe estar entre 0 y 40 años.</small>
+            }
+          </label>
+        </div>
+        <div class="form-actions">
+          <button class="secondary-button" type="button" (click)="closeForm()">Cancelar</button>
+          <button class="primary-button" type="submit" [disabled]="saving()">
+            {{ saving() ? 'Guardando…' : editingId() === null ? 'Agregar mascota' : 'Guardar cambios' }}
+          </button>
+        </div>
+      </form>
+    </section>
+  }
+
+  @if (loading()) {
+    <div class="loading-state" role="status" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>Cargando a tus compañeros…</span>
+    </div>
+  } @else if (loadFailed()) {
+    <div class="empty-state">
+      <div class="empty-illustration" aria-hidden="true"><span class="empty-paw">↻</span></div>
+      <h3>No pudimos cargar tus mascotas</h3>
+      <p>Vuelve a intentarlo cuando la conexión esté disponible.</p>
+      <button class="primary-button" type="button" (click)="loadPets()">Reintentar</button>
+    </div>
+  } @else if (pets().length === 0) {
+    <div class="empty-state">
+      <div class="empty-illustration" aria-hidden="true">
+        <span class="empty-sun"></span>
+        <span class="empty-paw">🐾</span>
+      </div>
+      <h3>Aún no hay mascotas por aquí</h3>
+      <p>Agrega a tu primer compañero para empezar a crear su perfil.</p>
+      <button class="primary-button" type="button" (click)="openCreateForm()">＋ Agregar primera mascota</button>
+    </div>
+  } @else if (filteredPets().length === 0) {
+    <div class="empty-search">
+      <span aria-hidden="true">⌕</span>
+      <strong>No encontramos coincidencias</strong>
+      <p>Prueba con otro nombre o raza.</p>
+      <button type="button" class="text-button" (click)="search.set('')">Limpiar búsqueda</button>
+    </div>
+  } @else {
+    <div class="pet-grid">
+      @for (pet of filteredPets(); track pet.id; let index = $index) {
+        <article class="pet-card" [class.tone-green]="index % 2 === 0" [class.tone-peach]="index % 2 !== 0">
+          <div class="card-top">
+            <span class="pet-avatar" aria-hidden="true">{{ pet.name.charAt(0).toLocaleUpperCase() }}</span>
+            <div class="card-actions">
+              <button class="icon-button edit-button" type="button" [attr.aria-label]="'Editar a ' + pet.name" (click)="openEditForm(pet)">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5 5 5M4 20l4.3-.9L19 8.4a2.1 2.1 0 0 0-3-3L5.3 16.1 4 20Z"/></svg>
+              </button>
+              <button class="icon-button delete-button" type="button" [disabled]="deletingId() === pet.id" [attr.aria-label]="'Eliminar a ' + pet.name" (click)="deletePet(pet)">
+                @if (deletingId() === pet.id) { <span class="mini-spinner" aria-hidden="true"></span> } @else {
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-.8 13H6.8L6 7m4 4v5m4-5v5"/></svg>
+                }
+              </button>
+            </div>
+          </div>
+          <a class="pet-info" [routerLink]="['/pet', pet.id]">
+            <h3>{{ pet.name }}</h3>
+            <p>{{ pet.breed }}</p>
+          </a>
+          <div class="card-bottom">
+            <span class="age-badge"><span aria-hidden="true">✦</span> {{ pet.age }} {{ pet.age === 1 ? 'año' : 'años' }}</span>
+            <a class="details-link" [routerLink]="['/pet', pet.id]">Ver perfil <span aria-hidden="true">→</span></a>
+          </div>
+        </article>
+      }
+    </div>
+  }
+</section>
