@@ -157,7 +157,8 @@ manualmente desde otra rama no despliega.
 Para un stack nuevo, despliega primero el backend y después el frontend desde `main`. El workflow de
 cada repositorio publica (o reutiliza) la imagen y valida el endpoint del componente; el backend
 además ejecuta las pruebas Maven y la imagen Angular compila la aplicación. Al terminar, revisa
-`WebsiteUrl` y `http://<IP-publica>/pets`.
+la URL que muestra el job de despliegue frontend y `http://<IP-publica>/pets`. Si la instancia se
+detiene y vuelve a iniciar, su IP pública puede cambiar.
 
 No pegues credenciales AWS en el código o en el chat. Un `git clone` por sí solo no configura AWS ni
 GitHub Actions: cada estudiante necesita acceso de escritura al repositorio donde empujará cambios,

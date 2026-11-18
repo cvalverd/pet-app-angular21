@@ -96,6 +96,7 @@ if not isinstance(pets, list) or len(pets) < 4:
     raise SystemExit("Public GET /pets did not return at least four demo records.")
 print(f"EC2 smoke tests passed: frontend HTTP 200; API HTTP 200 with {len(pets)} records.")
 PY
+  echo "Website: http://${public_ip}/"
 else
   curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 \
     --max-time 10 "http://${public_ip}/pets" --output "$RUNNER_TEMP/pets-response.json"
